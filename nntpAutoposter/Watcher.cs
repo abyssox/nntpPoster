@@ -26,7 +26,7 @@ namespace nntpAutoposter
         {
             foreach (var watchFolderSetting in configuration.WatchFolderSettings)
             {
-                log.InfoFormat("Monitoring '{0}' for new files or folders to post.", watchFolderSetting.Path.FullName);
+                log.DebugFormat("Monitoring '{0}' for new files or folders to post.", watchFolderSetting.Path.FullName);
             }
 
             _cts = new CancellationTokenSource();

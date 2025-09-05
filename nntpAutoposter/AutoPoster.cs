@@ -35,7 +35,6 @@ namespace nntpAutoposter
 
         public void Start()
         {
-            log.InfoFormat("Starting nntpPoster version {0}", Assembly.GetExecutingAssembly().GetName().Version);
             InitializeEnvironment();
 
             _cts = new CancellationTokenSource();

@@ -2,6 +2,7 @@
 using nntpAutoposter;
 using System;
 using System.IO;
+using System.Reflection;
 using System.ServiceProcess;
 using Util.Configuration;
 
@@ -28,6 +29,8 @@ namespace nntpAutoPosterWindowsService
         {
             try
             {
+                log.InfoFormat("Starting nntpPoster version {0}", Assembly.GetExecutingAssembly().GetName().Version);
+
                 Directory.SetCurrentDirectory(AppDomain.CurrentDomain.BaseDirectory);
 
                 var configuration = Settings.LoadSettings();
@@ -58,15 +61,21 @@ namespace nntpAutoPosterWindowsService
                     log.Info("Notifications disabled");
                 }
 
-                verifier = IndexerVerifierBase.GetActiveVerifier(configuration);
-                if (verifier != null)
-                {
-                    verifier.Start();
-                    log.Info("Verifier started");
+                if (configuration.VerificationEnabled) {
+                    verifier = IndexerVerifierBase.GetActiveVerifier(configuration);
+                    if (verifier != null)
+                    {
+                        verifier.Start();
+                        log.Info("Verifier started");
+                    }
+                    else
+                    {
+                        log.Info("No verifier");
+                    }
                 }
                 else
                 {
-                    log.Info("No verifier");
+                    log.Info("Verification disabled");
                 }
 
                 cleaner = new DatabaseCleaner(configuration);
