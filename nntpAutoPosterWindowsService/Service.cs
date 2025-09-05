@@ -58,6 +58,9 @@ namespace nntpAutoPosterWindowsService
                     {
                         log.Info("No notifier");
                     }
+                } else
+                {
+                    log.Info("Notifications disabled");
                 }
 
                 verifier = IndexerVerifierBase.GetActiveVerifier(configuration);
