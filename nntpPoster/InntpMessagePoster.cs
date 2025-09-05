@@ -1,8 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using nntpPoster.yEncLib;
-
-namespace nntpPoster
+﻿namespace nntpPoster
 {
     public interface InntpMessagePoster
     {

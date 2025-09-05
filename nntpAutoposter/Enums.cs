@@ -6,6 +6,6 @@
         Watch = 1,
         Queue = 2,
         Backup = 3,
-        Failed = 4        
+        Failed = 4
     }
 }

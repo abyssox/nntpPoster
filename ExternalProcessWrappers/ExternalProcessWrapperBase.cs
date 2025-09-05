@@ -1,10 +1,7 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using log4net;
+using System;
 using System.Diagnostics;
-using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
-using log4net;
 
 namespace ExternalProcessWrappers
 {
@@ -13,59 +10,55 @@ namespace ExternalProcessWrappers
         protected static readonly ILog log = LogManager.GetLogger(
             System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
-        protected abstract String ProcessPathLocation { get; }
+        protected abstract string ProcessPathLocation { get; }
 
         protected DateTime LastOutputReceivedAt { get; set; }
 
-        private String _processLocation;
-        public String ProcessLocation
+        private string _processLocation;
+        public string ProcessLocation
         {
             get { return _processLocation; }
             set
             {
-                if (String.IsNullOrWhiteSpace(value))
-                    _processLocation = ProcessPathLocation;   //Assume the process is accessible via the PATH environment variable.
-                else
-                    _processLocation = value;
+                _processLocation = string.IsNullOrWhiteSpace(value) ? ProcessPathLocation : value;
             }
         }
 
-        public Int32 InactiveProcessTimeout { get; set; }
+        public int InactiveProcessTimeout { get; set; }
 
-        private StringBuilder outDataTmp;
-        private StringBuilder errDataTmp;
-        private StdStreamReader stdoutReader;
-        private StdStreamReader stderrReader;
+        private StringBuilder _outBuf;
+        private StringBuilder _errBuf;
+        private StdStreamReader _stdoutReader;
+        private StdStreamReader _stderrReader;
 
-        protected ExternalProcessWrapperBase(Int32 inactiveProcessTimeout)
+        protected ExternalProcessWrapperBase(int inactiveProcessTimeout)
         {
             InactiveProcessTimeout = inactiveProcessTimeout;
             ProcessLocation = ProcessPathLocation;
         }
 
-        protected ExternalProcessWrapperBase(Int32 inactiveProcessTimeout, String processLocation)
+        protected ExternalProcessWrapperBase(int inactiveProcessTimeout, string processLocation)
         {
             InactiveProcessTimeout = inactiveProcessTimeout;
             ProcessLocation = processLocation;
         }
 
-        protected void ExecuteProcess(String parameters, String workingDirectory = null)
+        protected void ExecuteProcess(string parameters, string workingDirectory = null)
         {
-            outDataTmp = new StringBuilder();
-            errDataTmp = new StringBuilder();
-            stdoutReader = new StdStreamReader();
-            stderrReader = new StdStreamReader();
+            _outBuf = new StringBuilder();
+            _errBuf = new StringBuilder();
+            _stdoutReader = new StdStreamReader();
+            _stderrReader = new StdStreamReader();
 
-            stdoutReader.DataReceivedEvent +=
-                new EventHandler<DataReceived>(StdoutReader_DataReceivedEvent);
-            stderrReader.DataReceivedEvent +=
-                new EventHandler<DataReceived>(StderrReeader_DataReceivedEvent);
+            _stdoutReader.DataReceivedEvent += StdoutReader_DataReceivedEvent;
+            _stderrReader.DataReceivedEvent += StderrReader_DataReceivedEvent;
 
             using (var process = new Process())
             {
-                process.StartInfo.Arguments = parameters;
                 process.StartInfo.FileName = ProcessLocation;
-                if (!String.IsNullOrWhiteSpace(workingDirectory))
+                process.StartInfo.Arguments = parameters;
+
+                if (!string.IsNullOrWhiteSpace(workingDirectory))
                 {
                     process.StartInfo.WorkingDirectory = workingDirectory;
                     log.DebugFormat("Process working directory: [{0}]", workingDirectory);
@@ -73,7 +66,7 @@ namespace ExternalProcessWrappers
 
                 log.DebugFormat("Executing process: [{0} {1}]", ProcessLocation, parameters);
 
-                LastOutputReceivedAt = DateTime.Now;
+                LastOutputReceivedAt = DateTime.UtcNow;
 
                 process.StartInfo.UseShellExecute = false;
                 process.StartInfo.RedirectStandardOutput = true;
@@ -82,85 +75,119 @@ namespace ExternalProcessWrappers
 
                 process.Start();
 
-                stdoutReader.StartReader(process.StandardOutput.BaseStream, process);
-                stderrReader.StartReader(process.StandardError.BaseStream, process);
+                _stdoutReader.StartReader(process.StandardOutput.BaseStream, process);
+                _stderrReader.StartReader(process.StandardError.BaseStream, process);
 
-
-                while (!process.WaitForExit(60*1000))
+                while (!process.WaitForExit(60 * 1000))
                 {
                     process.Refresh();
                     if (process.HasExited)
                     {
-                        stdoutReader.IsDone();
-                        stderrReader.IsDone();
+                        _stdoutReader.IsDone();
+                        _stderrReader.IsDone();
                         break;
                     }
 
-                    if ((DateTime.Now - LastOutputReceivedAt).TotalMinutes > InactiveProcessTimeout)
+                    if (InactiveProcessTimeout > 0 &&
+                        (DateTime.UtcNow - LastOutputReceivedAt).TotalMinutes > InactiveProcessTimeout)
                     {
                         log.WarnFormat("No output received for {0} minutes, killing external process.", InactiveProcessTimeout);
-                        stdoutReader.IsDone();
-                        stderrReader.IsDone();
-                        process.Kill();
-                        throw new Exception("External process had to be killed due to inactivity.");
+                        try
+                        {
+                            _stdoutReader.IsDone();
+                            _stderrReader.IsDone();
+                            process.Kill();
+                        }
+                        catch (Exception killEx)
+                        {
+                            log.Warn("Failed to kill external process after inactivity.", killEx);
+                        }
+
+                        string lastErr = PeekLastLine(_errBuf);
+                        throw new Exception("External process had to be killed due to inactivity."
+                            + (string.IsNullOrWhiteSpace(lastErr) ? "" : " Last stderr: " + lastErr));
                     }
                 }
 
+                _stdoutReader.IsDone();
+                _stderrReader.IsDone();
+
                 if (process.ExitCode != 0)
                 {
-                    throw new Exception("Process has exited with errors. Exit code: " + process.ExitCode);
+                    string lastErr = PeekLastLine(_errBuf);
+                    throw new Exception("Process has exited with errors. Exit code: " + process.ExitCode
+                        + (string.IsNullOrWhiteSpace(lastErr) ? "" : " Last stderr: " + lastErr));
                 }
             }
         }
 
         private void StdoutReader_DataReceivedEvent(object sender, DataReceived e)
         {
-            LastOutputReceivedAt = DateTime.Now;
-            outDataTmp.Append(e.Data);
-            Int32 indexOfNewLine = outDataTmp.ToString().IndexOf(Environment.NewLine);
-            while (indexOfNewLine >= 0)
-            {
-                String outputLine = outDataTmp.ToString().Substring(0, indexOfNewLine);
+            LastOutputReceivedAt = DateTime.UtcNow;
+            if (e == null || e.Data == null) return;
 
-                Process_OutputDataReceived(sender, outputLine);
-
-                outDataTmp.Remove(0, indexOfNewLine + Environment.NewLine.Length);
-                indexOfNewLine = outDataTmp.ToString().IndexOf(Environment.NewLine);
-            }
+            _outBuf.Append(e.Data);
+            ProcessBufferedLines(_outBuf, line => Process_OutputDataReceived(sender, line));
         }
 
-        private void StderrReeader_DataReceivedEvent(object sender, DataReceived e)
+        private void StderrReader_DataReceivedEvent(object sender, DataReceived e)
         {
-            LastOutputReceivedAt = DateTime.Now;
-            errDataTmp.Append(e.Data);
+            LastOutputReceivedAt = DateTime.UtcNow;
+            if (e == null || e.Data == null) return;
 
-            Int32 indexOfNewLine = errDataTmp.ToString().IndexOf(Environment.NewLine);
-            while (indexOfNewLine >= 0)
-            {
-                String errLine = errDataTmp.ToString().Substring(0, indexOfNewLine);
-
-                Process_ErrorDataReceived(sender, errLine);
-
-                errDataTmp.Remove(0, indexOfNewLine + Environment.NewLine.Length);
-                indexOfNewLine = errDataTmp.ToString().IndexOf(Environment.NewLine);
-            }
+            _errBuf.Append(e.Data);
+            ProcessBufferedLines(_errBuf, line => Process_ErrorDataReceived(sender, line));
         }
 
-        protected virtual void Process_OutputDataReceived(object sender, String outputLine)
-        {            
-            if(!String.IsNullOrWhiteSpace(outputLine))
+        private static void ProcessBufferedLines(StringBuilder buffer, Action<string> handleLine)
+        {
+            int start = 0;
+            for (int i = 0; i < buffer.Length; i++)
+            {
+                if (buffer[i] == '\n')
+                {
+                    int length = i - start + 1;
+                    var line = buffer.ToString(start, length);
+
+                    line = line.TrimEnd('\n');
+                    if (line.EndsWith("\r", StringComparison.Ordinal)) line = line.Substring(0, line.Length - 1);
+
+                    if (!string.IsNullOrWhiteSpace(line))
+                        handleLine(line);
+
+                    start = i + 1;
+                }
+            }
+
+            if (start > 0)
+                buffer.Remove(0, start);
+        }
+
+        private static string PeekLastLine(StringBuilder buffer)
+        {
+            if (buffer == null || buffer.Length == 0) return string.Empty;
+            int take = Math.Min(512, buffer.Length);
+            string tail = buffer.ToString(buffer.Length - take, take);
+            int nl = Math.Max(tail.LastIndexOf('\n'), tail.LastIndexOf('\r'));
+            string last = nl >= 0 ? tail.Substring(nl + 1) : tail;
+            return last.Trim();
+        }
+
+        protected virtual void Process_OutputDataReceived(object sender, string outputLine)
+        {
+            if (!string.IsNullOrWhiteSpace(outputLine))
                 log.Debug(outputLine);
         }
 
-        protected virtual void Process_ErrorDataReceived(object sender, String outputLine)
+        protected virtual void Process_ErrorDataReceived(object sender, string outputLine)
         {
-            if (!String.IsNullOrWhiteSpace(outputLine))
+            if (!string.IsNullOrWhiteSpace(outputLine))
                 log.Warn(outputLine);
         }
 
         public void Dispose()
         {
-            this.Dispose(true);
+            Dispose(true);
             GC.SuppressFinalize(this);
         }
 
@@ -168,10 +195,18 @@ namespace ExternalProcessWrappers
         {
             if (disposing)
             {
-                if(stdoutReader != null)
-                    stdoutReader.Dispose();
-                if(stderrReader != null)
-                    stderrReader.Dispose();
+                if (_stdoutReader != null)
+                {
+                    _stdoutReader.DataReceivedEvent -= StdoutReader_DataReceivedEvent;
+                    _stdoutReader.Dispose();
+                    _stdoutReader = null;
+                }
+                if (_stderrReader != null)
+                {
+                    _stderrReader.DataReceivedEvent -= StderrReader_DataReceivedEvent;
+                    _stderrReader.Dispose();
+                    _stderrReader = null;
+                }
             }
         }
     }

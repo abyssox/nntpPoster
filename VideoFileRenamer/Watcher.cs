@@ -1,11 +1,10 @@
-﻿using System;
+﻿using log4net;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using log4net;
 using Util;
 
 namespace VideoFileRenamer
@@ -39,7 +38,7 @@ namespace VideoFileRenamer
                         filesToProcess.AddRange(GetExtendedFileInfo(toRename));
                     }
                 }
-                catch(Exception ex)
+                catch (Exception ex)
                 {
                     log.Fatal("Fatal exception in the watcher task.", ex);
                     Environment.Exit(1);
@@ -57,7 +56,7 @@ namespace VideoFileRenamer
 
         public void Start()
         {
-            log.InfoFormat("Monitoring '{0}' for new files or folders to rename.", configuration.RootWatchFolder.FullName);      
+            log.InfoFormat("Monitoring '{0}' for new files or folders to rename.", configuration.RootWatchFolder.FullName);
             MyTask.Start();
         }
 

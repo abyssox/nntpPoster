@@ -1,9 +1,5 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using log4net;
+﻿using log4net;
+using System;
 
 namespace TestLoggingExtensions
 {
@@ -12,12 +8,12 @@ namespace TestLoggingExtensions
         private static ILog Log = LogManager.GetLogger("Test");
         static void Main(string[] args)
         {
-            for(int i = 0; i < 100; i++)
+            for (int i = 0; i < 100; i++)
             {
                 Log.Info("Repeating message");
             }
             Log.Info("A new message");
-            for(int i = 0; i < 100; i++)
+            for (int i = 0; i < 100; i++)
             {
                 Log.Info("Another Repeating message");
             }

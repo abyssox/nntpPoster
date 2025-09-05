@@ -1,16 +1,9 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Net;
-using System.Net.Http;
-using System.Security.Principal;
 using System.ServiceModel.Syndication;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Xml;
-using log4net;
 using Util;
 using Util.Configuration;
 
@@ -36,13 +29,13 @@ namespace nntpAutoposter
             HttpWebRequest request = WebRequest.Create(verificationGetUrl) as HttpWebRequest;       //Mono does not support CreateHttp
             //request.ServerCertificateValidationCallback = ServerCertificateValidationCallback;    //Not implemented in mono
             request.Method = "GET";
-            request.Timeout = 60*1000;
+            request.Timeout = 60 * 1000;
             HttpWebResponse response = request.GetResponse() as HttpWebResponse;
-            if(response.StatusCode != HttpStatusCode.OK)
+            if (response.StatusCode != HttpStatusCode.OK)
                 throw new Exception("Error when verifying on indexer: "
                                 + response.StatusCode + " " + response.StatusDescription);
 
-            using(var reader = new StreamReader(response.GetResponseStream()))
+            using (var reader = new StreamReader(response.GetResponseStream()))
             {
                 var responseBody = reader.ReadToEnd();
                 if (responseBody.IndexOf("<error code=") >= 0)
@@ -64,7 +57,7 @@ namespace nntpAutoposter
                             return true;
                     }
                 }
-            }           
+            }
             return false;
         }
 
@@ -86,7 +79,7 @@ namespace nntpAutoposter
                 char target = Configuration.IndexerRenameMapTarget[i];
                 if (source == target)
                 {
-                    sb.Replace(new string(new char[] {source}), String.Empty);
+                    sb.Replace(new string(new char[] { source }), String.Empty);
                 }
                 else
                 {

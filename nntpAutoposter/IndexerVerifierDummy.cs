@@ -15,6 +15,6 @@ namespace nntpAutoposter
         protected override Boolean UploadIsOnIndexer(UploadEntry upload)
         {
             return true;
-        }        
+        }
     }
 }

@@ -1,10 +1,5 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Linq;
 using System.Runtime.Serialization;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace Util.Configuration
 {
@@ -16,7 +11,7 @@ namespace Util.Configuration
 
         public Int64 FromSizeBytes
         {
-            get { return (Int64)FromSize*1024*1024; }
+            get { return (Int64)FromSize * 1024 * 1024; }
         }
 
         [DataMember(Order = 1)]

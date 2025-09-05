@@ -1,17 +1,6 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Net;
-using System.Net.Http;
-using System.Security.Principal;
-using System.ServiceModel.Syndication;
-using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
-using System.Xml;
-using log4net;
-using Util;
 using Util.Configuration;
 
 namespace nntpAutoposter
@@ -46,23 +35,23 @@ namespace nntpAutoposter
             HttpWebRequest request = WebRequest.Create(verificationGetUrl) as HttpWebRequest;       //Mono does not support CreateHttp
             //request.ServerCertificateValidationCallback = ServerCertificateValidationCallback;    //Not implemented in mono
             request.Method = "GET";
-            request.Timeout = 60*1000;
+            request.Timeout = 60 * 1000;
             HttpWebResponse response;
 
             try
             {
                 response = request.GetResponse() as HttpWebResponse;
             }
-            catch(WebException ex)
+            catch (WebException ex)
             {
                 response = ex.Response as HttpWebResponse;
             }
 
-            using(var reader = new StreamReader(response.GetResponseStream()))
+            using (var reader = new StreamReader(response.GetResponseStream()))
             {
                 var responseBody = reader.ReadToEnd();
 
-                switch(response.StatusCode)
+                switch (response.StatusCode)
                 {
                     case HttpStatusCode.OK:
                         log.InfoFormat("The release {0} was found on indexer. Response: {1}", upload.CleanedName, responseBody);
@@ -82,7 +71,7 @@ namespace nntpAutoposter
 
         private void HandleServerError(UploadEntry upload, String responseBody)
         {
-            if(responseBody.IndexOf("ALREADY EXISTS") >= 0)
+            if (responseBody.IndexOf("ALREADY EXISTS") >= 0)
             {
                 log.InfoFormat("The release {0} already exists.", upload.CleanedName);
                 if (upload.IsRepost)
@@ -107,7 +96,7 @@ namespace nntpAutoposter
                 log.InfoFormat("Reposting {0}", upload.CleanedName);
                 upload.UploadedAt = null;
                 upload.Move(Configuration, Location.Queue);
-            }           
+            }
 
             DBHandler.Instance.UpdateUploadEntry(upload);
         }

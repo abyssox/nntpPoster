@@ -1,10 +1,5 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using ExternalProcessWrappers;
 using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using ExternalProcessWrappers;
 
 namespace rarTester
 {
@@ -18,7 +13,7 @@ namespace rarTester
 
             var rarWrapper = new RarWrapper(5);
 
-            rarWrapper.Compress(source, target, targetName, 15*1000*1000, null, null);
+            rarWrapper.Compress(source, target, targetName, 15 * 1000 * 1000, null, null);
 
 #if DEBUG       //VS does not halt after execution in debug mode.
             Console.WriteLine("Finished");

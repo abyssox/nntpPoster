@@ -1,14 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using log4net;
+using System;
 using System.IO;
-using System.Linq;
-using System.Net;
-using System.Net.Security;
-using System.Security.Cryptography.X509Certificates;
-using System.Text;
-using System.Threading.Tasks;
-using System.Xml.Linq;
-using log4net;
 using Util.Configuration;
 
 namespace nntpPoster
@@ -18,43 +10,124 @@ namespace nntpPoster
         private static readonly ILog log = LogManager.GetLogger(
             System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
-        static Int32 Main(string[] args)
+        private const int ExitOk = 0;
+        private const int ExitMissingArg = 1;
+        private const int ExitPathNotFound = 2;
+        private const int ExitUnhandledError = 3;
+
+        static int Main(string[] args)
         {
-            if (args.Length < 1)
+            try
             {
-                Console.WriteLine("Please supply a file or folder to upload.");
-                return 1;
-            }
-            var fullPath = args[0];
-            FileSystemInfo toUpload;
+                if (args == null || args.Length < 1 || IsHelp(args[0]))
+                {
+                    PrintUsage();
+                    return ExitMissingArg;
+                }
 
-            FileAttributes attributes = File.GetAttributes(fullPath);
-            if (attributes.HasFlag(FileAttributes.Directory))
+                string watchShortName = "Default";
+                string explicitTitle = null;
+                string pathArg = null;
+
+                for (int i = 0; i < args.Length; i++)
+                {
+                    var a = args[i];
+                    if (a.Equals("--watch", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                    {
+                        watchShortName = args[++i];
+                    }
+                    else if (a.Equals("--title", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                    {
+                        explicitTitle = args[++i];
+                    }
+                    else if (!a.StartsWith("--"))
+                    {
+                        pathArg = a;
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(pathArg))
+                {
+                    Console.Error.WriteLine("Error: please supply a file or folder to upload.");
+                    PrintUsage();
+                    return ExitMissingArg;
+                }
+
+                string fullPath = GetFullPathSafe(pathArg);
+                FileSystemInfo toUpload = ResolveFileSystemInfo(fullPath);
+                if (toUpload == null || !toUpload.Exists)
+                {
+                    Console.Error.WriteLine("Error: the supplied file or folder does not exist: {0}", fullPath);
+                    return ExitPathNotFound;
+                }
+
+                var config = Settings.LoadSettings();
+                var watch = config.GetWatchFolderSettings(watchShortName);
+                var poster = new UsenetPoster(config, watch);
+                poster.NewUploadSpeedReport += Poster_NewUploadSpeedReport;
+
+                if (!string.IsNullOrWhiteSpace(explicitTitle))
+                {
+                    poster.PostToUsenet(toUpload, explicitTitle, null);
+                }
+                else
+                {
+                    poster.PostToUsenet(toUpload, (string)null);
+                }
+
+                poster.NewUploadSpeedReport -= Poster_NewUploadSpeedReport;
+                Console.WriteLine();
+                return ExitOk;
+            }
+            catch (Exception ex)
             {
-                toUpload = new DirectoryInfo(fullPath);
+                log.Fatal("Fatal exception in uploader.", ex);
+                Console.Error.WriteLine("Fatal: " + ex.Message);
+                return ExitUnhandledError;
             }
-            else
-            {
-                toUpload = new FileInfo(fullPath);
-            }
-
-            if (!toUpload.Exists)
-            {
-                Console.WriteLine("The supplied file or folder does not exist.");
-                return 2;
-            }
-            Settings config = Settings.LoadSettings();
-
-            UsenetPoster poster = new UsenetPoster(config, config.GetWatchFolderSettings("Default"));
-            poster.NewUploadSpeedReport += poster_newUploadSpeedReport;
-            poster.PostToUsenet(toUpload, null);
-
-            return 0;
         }
 
-        static void poster_newUploadSpeedReport(object sender, UploadSpeedReport e)
+        private static void Poster_NewUploadSpeedReport(object sender, UploadSpeedReport e)
         {
-            Console.Write("\r" + e.ToString() + "          ");
+            Console.Write("\r{0}          ", e.ToString());
+        }
+
+        private static bool IsHelp(string arg)
+        {
+            return string.Equals(arg, "-h", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "--help", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "/h", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "/?", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void PrintUsage()
+        {
+            Console.WriteLine("Usage:");
+            Console.WriteLine("  nntpPoster <path> [--watch <ShortName>] [--title <Title>]");
+            Console.WriteLine();
+            Console.WriteLine("Examples:");
+            Console.WriteLine("  nntpPoster \"D:\\Uploads\\MyFolder\"");
+            Console.WriteLine("  nntpPoster \"C:\\file.iso\" --watch Movies --title \"Interesting.Movie.2024\"");
+        }
+
+        private static string GetFullPathSafe(string path)
+        {
+            try { return Path.GetFullPath(path); }
+            catch { return path; }
+        }
+
+        private static FileSystemInfo ResolveFileSystemInfo(string fullPath)
+        {
+            try
+            {
+                if (Directory.Exists(fullPath)) return new DirectoryInfo(fullPath);
+                if (File.Exists(fullPath)) return new FileInfo(fullPath);
+            }
+            catch
+            {
+                // swallow and return null → caller handles as "not found"
+            }
+            return null;
         }
     }
 }

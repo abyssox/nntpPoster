@@ -78,6 +78,7 @@ namespace Util.Configuration
         public String NotificationType { get; set; }
         public String NzbPostFilenameParam { get; set; }
         public String NzbPostExtraParams { get; set; }
+        public Boolean VerificationEnabled { get; set; }
         public String VerificationType { get; set; }
         public Int32 MaxNotificationAttempts { get; set; }
 

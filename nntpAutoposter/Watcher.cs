@@ -1,11 +1,8 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using log4net;
+using System;
 using System.IO;
-using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using log4net;
 using Util;
 using Util.Configuration;
 
@@ -16,89 +13,118 @@ namespace nntpAutoposter
         private static readonly ILog log = LogManager.GetLogger(
             System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
-        private Object monitor = new Object();
-        private Settings configuration;
-        private Task MyTask;
-        private Boolean StopRequested;
+        private readonly Settings configuration;
+        private Task _workerTask;
+        private CancellationTokenSource _cts;
 
         public Watcher(Settings configuration)
         {
-            this.configuration = configuration;
-            StopRequested = false;
-            MyTask = new Task(WatcherTask, TaskCreationOptions.LongRunning);
-        }
-
-        private void WatcherTask()
-        {
-            while (!StopRequested)
-            {
-                try
-                {
-                    foreach(WatchFolderSettings watchFolderSetting in configuration.WatchFolderSettings)
-                        foreach (FileSystemInfo toPost in watchFolderSetting.Path.EnumerateFileSystemInfos())
-                    {
-                        if(toPost.Extension != ".nfo")
-                            MoveToQueueFolderAndPost(toPost, watchFolderSetting);
-                    }
-                }
-                catch(Exception ex)
-                {
-                    log.Fatal("Fatal exception in the watcher task.", ex);
-                    Environment.Exit(1);
-                }
-                lock (monitor)
-                {
-                    if (StopRequested)
-                    {
-                        break;
-                    }
-                    Monitor.Wait(monitor, new TimeSpan(0, 0, configuration.FilesystemCheckIntervalSeconds));
-                }
-            }
+            this.configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         }
 
         public void Start()
         {
-            foreach (WatchFolderSettings watchFolderSetting in configuration.WatchFolderSettings)
-                log.InfoFormat("Monitoring '{0}' for new files or folders to post.", watchFolderSetting.Path.FullName);      
-            MyTask.Start();
+            foreach (var watchFolderSetting in configuration.WatchFolderSettings)
+            {
+                log.InfoFormat("Monitoring '{0}' for new files or folders to post.", watchFolderSetting.Path.FullName);
+            }
+
+            _cts = new CancellationTokenSource();
+            _workerTask = Task.Factory.StartNew(
+                () => WatcherLoop(_cts.Token),
+                _cts.Token,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
         }
 
-        public void Stop(Int32 millisecondsTimeout = Timeout.Infinite)
+        public void Stop(int millisecondsTimeout = Timeout.Infinite)
         {
-            lock (monitor)
-            {
-                StopRequested = true;
-                Monitor.Pulse(monitor);
-            }
-            MyTask.Wait(millisecondsTimeout);
+            var localTask = _workerTask;
+            var localCts = _cts;
 
-            foreach (WatchFolderSettings watchFolderSetting in configuration.WatchFolderSettings)
+            if (localCts != null && !localCts.IsCancellationRequested)
+            {
+                try { localCts.Cancel(); } catch { /* ignore */ }
+            }
+
+            if (localTask != null)
+            {
+                try { localTask.Wait(millisecondsTimeout); }
+                catch (AggregateException ae)
+                {
+                    ae.Handle(ex =>
+                    {
+                        if (ex is OperationCanceledException) return true;
+                        log.Warn("Watcher task ended with an exception.", ex);
+                        return true;
+                    });
+                }
+            }
+
+            foreach (var watchFolderSetting in configuration.WatchFolderSettings)
+            {
                 log.InfoFormat("Monitoring '{0}' for files and folders stopped.", watchFolderSetting.Path.FullName);
+            }
+        }
+
+        private void WatcherLoop(CancellationToken ct)
+        {
+            var interval = TimeSpan.FromSeconds(
+                configuration.FilesystemCheckIntervalSeconds > 0
+                    ? configuration.FilesystemCheckIntervalSeconds
+                    : 1);
+
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    foreach (var watchFolderSetting in configuration.WatchFolderSettings)
+                    {
+                        foreach (var toPost in watchFolderSetting.Path.EnumerateFileSystemInfos())
+                        {
+                            if (string.Equals(toPost.Extension, ".nfo", StringComparison.OrdinalIgnoreCase))
+                                continue;
+
+                            MoveToQueueFolderAndPost(toPost, watchFolderSetting);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    log.Fatal("Fatal exception in the watcher task.", ex);
+                    Environment.Exit(1);
+                }
+
+                if (ct.WaitHandle.WaitOne(interval)) break;
+            }
         }
 
         private void MoveToQueueFolderAndPost(FileSystemInfo toPost, WatchFolderSettings folderConfiguration)
         {
             try
             {
-                if ((DateTime.Now - toPost.LastAccessTime).TotalMinutes > configuration.FilesystemCheckTesholdMinutes && toPost.Size() > 0)
+                if ((DateTime.Now - toPost.LastAccessTime).TotalMinutes <= configuration.FilesystemCheckTesholdMinutes)
+                    return;
+
+                if (toPost.Size() <= 0)
+                    return;
+
+                var destination = new DirectoryInfo(Path.Combine(configuration.QueueFolder.FullName, folderConfiguration.ShortName));
+                if (!destination.Exists) destination.Create();
+
+                FileSystemInfo queueNfo = null;
+                var nfoPath = Path.Combine(folderConfiguration.Path.FullName, toPost.NameWithoutExtension() + ".nfo");
+                var nfoFile = new FileInfo(nfoPath);
+                if (nfoFile.Exists)
                 {
-                    DirectoryInfo destination = new DirectoryInfo(Path.Combine(configuration.QueueFolder.FullName, folderConfiguration.ShortName));
-
-                    FileInfo nfoFile = new FileInfo(Path.Combine(folderConfiguration.Path.FullName, toPost.NameWithoutExtension() + ".nfo"));
-                    FileSystemInfo queueNfo = null;
-                    if(nfoFile.Exists)
-                    {
-                        queueNfo = nfoFile.Move(destination);
-                    }
-
-                    FileSystemInfo queue = toPost.Move(destination);
-
-
-                    AddItemToPostingDb(queue, queueNfo, folderConfiguration);
+                    queueNfo = nfoFile.Move(destination);
                 }
+
+                var queuedItem = toPost.Move(destination);
+
+                AddItemToPostingDb(queuedItem, queueNfo, folderConfiguration);
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 log.Warn("Error when picking up a file/folder from the watch location.", ex);
             }
@@ -106,25 +132,28 @@ namespace nntpAutoposter
 
         private void AddItemToPostingDb(FileSystemInfo toPost, FileSystemInfo nfoFile, WatchFolderSettings folderConfiguration)
         {
-#pragma warning disable IDE0017 // Simplify object initialization
-            UploadEntry newUploadentry = new UploadEntry();
-#pragma warning restore IDE0017 // Simplify object initialization
-            newUploadentry.WatchFolderShortName = folderConfiguration.ShortName;
-            newUploadentry.CreatedAt = DateTime.UtcNow;
-            newUploadentry.Name = toPost.Name;
-            newUploadentry.RemoveAfterVerify = configuration.RemoveAfterVerify;
-            newUploadentry.Cancelled = false;
-            newUploadentry.Size = toPost.Size();
-            newUploadentry.PriorityNum = folderConfiguration.Priority;
-            newUploadentry.CurrentLocation = Location.Queue;
-            newUploadentry.HasNfo = nfoFile != null && nfoFile.Exists;
-            if (newUploadentry.Size == 0)
+            var size = toPost.Size();
+            if (size == 0)
             {
                 log.ErrorFormat("File added with a size of 0 bytes, This cannot be uploaded! File name: [{0}]",
                     toPost.FullName);
                 return;
             }
-            DBHandler.Instance.AddNewUploadEntry(newUploadentry);
+
+            var newUploadEntry = new UploadEntry
+            {
+                WatchFolderShortName = folderConfiguration.ShortName,
+                CreatedAt = DateTime.UtcNow,
+                Name = toPost.Name,
+                RemoveAfterVerify = configuration.RemoveAfterVerify,
+                Cancelled = false,
+                Size = size,
+                PriorityNum = folderConfiguration.Priority,
+                CurrentLocation = Location.Queue,
+                HasNfo = nfoFile != null && nfoFile.Exists
+            };
+
+            DBHandler.Instance.AddNewUploadEntry(newUploadEntry);
         }
     }
 }

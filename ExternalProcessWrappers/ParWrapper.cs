@@ -1,84 +1,168 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace ExternalProcessWrappers
 {
     public class ParWrapper : ExternalProcessWrapperBase
     {
-        private static readonly Int32 maxNumberOfBlocks = Int16.MaxValue;
-        private Boolean blockSizeTooSmall;
-        protected override string ProcessPathLocation
-        {
-            get { return "par2"; }
-        }
+        private const int MaxNumberOfBlocks = short.MaxValue;
+        private volatile bool _blockSizeTooSmall;
 
-        public ParWrapper(Int32 inactiveProcessTimeout)
-            : base(inactiveProcessTimeout)
-        {
-        }
+        protected override string ProcessPathLocation { get { return "par2"; } }
 
-        public String CommandFormat { get; set; }
+        public ParWrapper(int inactiveProcessTimeout) : base(inactiveProcessTimeout) { }
 
-        public ParWrapper(Int32 inactiveProcessTimeout, String parLocation, String commandFormat) : base(inactiveProcessTimeout, parLocation)
+        public string CommandFormat { get; set; }
+
+        public ParWrapper(int inactiveProcessTimeout, string parLocation, string commandFormat)
+            : base(inactiveProcessTimeout, parLocation)
         {
             CommandFormat = commandFormat;
         }
 
-        public void CreateParFilesInDirectory(DirectoryInfo workingFolder, String nameWithoutExtension, Int32 blockSize, Int32 redundancyPercentage, String extraParams)
+        public void CreateParFilesInDirectory(
+            DirectoryInfo workingFolder,
+            string nameWithoutExtension,
+            int blockSize,
+            int redundancyPercentage,
+            string extraParams)
         {
-            blockSizeTooSmall = false;
+            if (workingFolder == null) throw new ArgumentNullException(nameof(workingFolder));
+            if (string.IsNullOrWhiteSpace(nameWithoutExtension)) throw new ArgumentException("Name (without extension) is required.", nameof(nameWithoutExtension));
+            if (blockSize <= 0) throw new ArgumentOutOfRangeException(nameof(blockSize), "Block size must be > 0.");
+            if (redundancyPercentage < 0 || redundancyPercentage > 100) throw new ArgumentOutOfRangeException(nameof(redundancyPercentage), "Redundancy must be 0..100.");
+            if (string.IsNullOrWhiteSpace(CommandFormat)) throw new InvalidOperationException("Par command format is not configured.");
 
-            String parParameters = String.Format(CommandFormat,
-               blockSize,
-               redundancyPercentage,
-               String.Format("\"{0}.par2\"", nameWithoutExtension),
-               GetFileList(workingFolder),
-               extraParams
+            _blockSizeTooSmall = false;
+
+            string fmt = NormalizeParCommandFormat(CommandFormat);
+            string parBase = nameWithoutExtension.Replace("\"", string.Empty) + ".par2";
+            string parBaseArg = Quote(parBase);
+            string filesArg = GetFileList(workingFolder);
+
+            string extra = string.IsNullOrWhiteSpace(extraParams) ? string.Empty : extraParams.Trim();
+
+            string parParameters = string.Format(
+                fmt,
+                blockSize,
+                redundancyPercentage,
+                parBaseArg,   // {2}
+                filesArg,     // {3}
+                extra         // {4}
             );
 
             try
             {
-                this.ExecuteProcess(parParameters, workingFolder.FullName);
+                ExecuteProcess(parParameters, workingFolder.FullName);
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
-                if (blockSizeTooSmall)
+                if (_blockSizeTooSmall)
                     throw new Par2BlockSizeTooSmallException("Block size too small", ex);
                 throw;
             }
         }
 
-        private String GetFileList(DirectoryInfo workingFolder)
+        private static string NormalizeParCommandFormat(string raw)
         {
-            var allFiles = workingFolder.GetFileSystemInfos("*", SearchOption.AllDirectories);
-            StringBuilder fileList = new StringBuilder();
-            foreach (var file in allFiles)
+            string fmt = raw
+                .Replace("\"{2}{3}\"", "{2}{3}")
+                .Replace("\"{2}\"{3}", "{2}{3}")
+                .Replace("{2}\"{3}\"", "{2}{3}")
+                .Replace("\"{2}\"", "{2}")
+                .Replace("\"{3}\"", "{3}");
+
+            fmt = fmt.Replace("{2}{3}", "{2} {3}");
+
+            return fmt;
+        }
+
+        private string GetFileList(DirectoryInfo workingFolder)
+        {
+            var files = workingFolder.EnumerateFiles("*", SearchOption.AllDirectories);
+            var sb = new StringBuilder();
+
+            foreach (var file in files)
             {
-                fileList.Append(" \"");
-                fileList.Append(file.Name);
-                fileList.Append("\"");
+                string rel = GetRelativePath(workingFolder.FullName, file.FullName);
+                sb.Append(' ').Append(Quote(rel));
             }
 
-            return fileList.ToString();
+            return sb.ToString();
         }
 
-        protected override void Process_ErrorDataReceived(object sender, String outputLine)
+        protected override void Process_ErrorDataReceived(object sender, string outputLine)
         {
             base.Process_ErrorDataReceived(sender, outputLine);
-            if (outputLine != null && (outputLine.Contains("Block size is too small.") || outputLine.Contains("Too many input slices")))
-                blockSizeTooSmall = true;
+
+            if (string.IsNullOrEmpty(outputLine)) return;
+
+            var line = outputLine.ToLowerInvariant();
+            if (line.Contains("block size is too small")
+                || line.Contains("too many input slices")
+                || (line.Contains("too many") && line.Contains("slices")))
+            {
+                _blockSizeTooSmall = true;
+            }
         }
 
-        public Int32 CalculatePartSize(Int64 sizeOfFiles, Int32 yEncPartSize)
+        public int CalculatePartSize(long sizeOfFiles, int yEncPartSize)
         {
-            Decimal calcPartSize = (Decimal)sizeOfFiles / maxNumberOfBlocks;
-            Decimal partSizeMultiplier = Math.Ceiling(calcPartSize / yEncPartSize);
-            return yEncPartSize * (Int32)partSizeMultiplier;
+            if (yEncPartSize <= 0) throw new ArgumentOutOfRangeException(nameof(yEncPartSize), "yEnc part size must be > 0.");
+            if (sizeOfFiles <= 0) return yEncPartSize;
+
+            decimal calcPartSize = (decimal)sizeOfFiles / MaxNumberOfBlocks;
+            decimal multiplier = Math.Ceiling(calcPartSize / yEncPartSize);
+            if (multiplier < 1) multiplier = 1;
+
+            var result = (long)(yEncPartSize * multiplier);
+            if (result > int.MaxValue) return int.MaxValue;
+            return (int)result;
+        }
+
+        private static string Quote(string value)
+        {
+            if (value == null) return "\"\"";
+            string escaped = value.Replace("\"", "\"\"");
+            return "\"" + escaped + "\"";
+        }
+
+        // .NET 4.7.1 lacks Path.GetRelativePath
+        private static string GetRelativePath(string basePath, string fullPath)
+        {
+            if (string.IsNullOrEmpty(basePath)) return fullPath ?? string.Empty;
+            if (string.IsNullOrEmpty(fullPath)) return string.Empty;
+
+            if (!basePath.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal) &&
+                !basePath.EndsWith(Path.AltDirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+            {
+                basePath += Path.DirectorySeparatorChar;
+            }
+
+            try
+            {
+                var baseUri = new Uri(AppendDirectorySeparator(basePath));
+                var fullUri = new Uri(fullPath);
+                var rel = baseUri.MakeRelativeUri(fullUri).ToString();
+                rel = Uri.UnescapeDataString(rel.Replace('/', Path.DirectorySeparatorChar));
+                return rel;
+            }
+            catch
+            {
+                if (fullPath.StartsWith(basePath, StringComparison.OrdinalIgnoreCase))
+                    return fullPath.Substring(basePath.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                return fullPath;
+            }
+        }
+
+        private static string AppendDirectorySeparator(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return Path.DirectorySeparatorChar.ToString();
+            char c = path[path.Length - 1];
+            if (c != Path.DirectorySeparatorChar && c != Path.AltDirectorySeparatorChar)
+                return path + Path.DirectorySeparatorChar;
+            return path;
         }
     }
 }

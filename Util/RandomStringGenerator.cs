@@ -1,39 +1,60 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace Util
 {
-    public class RandomStringGenerator
+    public static class RandomStringGenerator
     {
-        //Source: https://stackoverflow.com/questions/1344221/how-can-i-generate-random-alphanumeric-strings-in-c/1344255#1344255
+        private const string Alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890_-";
+        
+        private static readonly RandomNumberGenerator Rng = RandomNumberGenerator.Create();
 
-        //64 characters to have a % chars/length equal to 0 to be balanced.
-        private static readonly char[] chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890_-".ToCharArray();
-
-        public static string GetRandomString(int size)
-        {            
-            byte[] data;
-            using (RNGCryptoServiceProvider crypto = new RNGCryptoServiceProvider())
-            {
-                data = new byte[size];
-                crypto.GetBytes(data);
-            }
-            StringBuilder result = new StringBuilder(size);
-            foreach (byte b in data)
-            {
-                result.Append(chars[b % (chars.Length)]);
-            }
-            return result.ToString();
+        static RandomStringGenerator()
+        {
+            AppDomain.CurrentDomain.ProcessExit += (s, e) => { try { Rng.Dispose(); } catch { } };
         }
 
-        public static string GetRandomString(int minSize, int maxSize)
+        public static string GetRandomString(int length)
         {
-            Random r = new Random();
-            return GetRandomString(r.Next(minSize, maxSize));
+            if (length <= 0) throw new ArgumentOutOfRangeException(nameof(length));
+
+            var data = new byte[length];
+            Rng.GetBytes(data);
+
+            var sb = new StringBuilder(length);
+            foreach (var b in data)
+            {
+                sb.Append(Alphabet[b & 63]);
+            }
+
+            return sb.ToString();
+        }
+
+        public static string GetRandomString(int minLength, int maxLength)
+        {
+            if (minLength < 0) throw new ArgumentOutOfRangeException(nameof(minLength));
+            if (maxLength <= minLength) throw new ArgumentOutOfRangeException(nameof(maxLength));
+            int length = minLength + GetRandomInt(maxLength - minLength);
+
+            return GetRandomString(length);
+        }
+
+        private static int GetRandomInt(int maxExclusive)
+        {
+            if (maxExclusive <= 0) throw new ArgumentOutOfRangeException(nameof(maxExclusive));
+
+            var buffer = new byte[4];
+            uint limit = (uint.MaxValue / (uint)maxExclusive) * (uint)maxExclusive;
+            uint value;
+
+            do
+            {
+                Rng.GetBytes(buffer);
+                value = BitConverter.ToUInt32(buffer, 0);
+            } while (value >= limit);
+
+            return (int)(value % (uint)maxExclusive);
         }
     }
 }

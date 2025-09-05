@@ -176,6 +176,7 @@ namespace Util.Configuration
             settings.ObfuscatedNotificationUrl = GetSettingString(baseConfig, IndexerSection, "ObfuscatedNotificationUrl");
             settings.NzbPostFilenameParam = GetSettingString(baseConfig, IndexerSection, "NzbPostFilenameParam", true, "file");
             settings.NzbPostExtraParams = GetSettingString(baseConfig, IndexerSection, "NzbPostExtraParams", true);
+            settings.VerificationEnabled = GetSettingBoolean(baseConfig, IndexerSection, "VerificationEnabled");
             settings.VerificationType = GetSettingString(baseConfig, IndexerSection, "VerificationType");
             settings.SearchUrl = GetSettingString(baseConfig, IndexerSection, "SearchUrl");
             settings.IndexerRenameMapSource = GetSettingString(baseConfig, IndexerSection, "IndexerRenameMapSource");
@@ -320,7 +321,7 @@ namespace Util.Configuration
             settings.ApplyRandomPassword = GetSettingBoolean(config, WatchfolderSection, "ApplyRandomPassword");
             settings.RarPassword = GetSettingString(config, WatchfolderSection, "RarPassword", true);
             settings.Priority = GetSettingInt(config, WatchfolderSection, "Priority");
-            settings.UseRandomMssageSubjects = GetSettingBoolean(config, WatchfolderSection, "UseRandomMessageSubjects", true);
+            settings.UseRandomMessageSubjects = GetSettingBoolean(config, WatchfolderSection, "UseRandomMessageSubjects", true);
             settings.ForceIncludeExtensionsInSubject = new List<String>(GetSettingString(config, WatchfolderSection, "ForceIncludeExtensionsInSubject").Split('|'));
 
             return settings;

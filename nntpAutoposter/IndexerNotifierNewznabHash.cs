@@ -16,8 +16,8 @@ namespace nntpAutoposter
         protected override void NotifyIndexerOfObfuscatedUpload(UploadEntry upload)
         {
             String notificationGetUrl = String.Format(
-                Configuration.ObfuscatedNotificationUrl, 
-                Uri.EscapeDataString(upload.ObscuredName), 
+                Configuration.ObfuscatedNotificationUrl,
+                Uri.EscapeDataString(upload.ObscuredName),
                 Uri.EscapeDataString(upload.CleanedName));
 
             ServicePointManager.ServerCertificateValidationCallback = ServerCertificateValidationCallback;
@@ -32,12 +32,12 @@ namespace nntpAutoposter
                 throw new Exception("Error when notifying indexer: "
                     + response.StatusCode + " " + response.StatusDescription);
 
-            using(var reader = new StreamReader(response.GetResponseStream()))
+            using (var reader = new StreamReader(response.GetResponseStream()))
             {
                 var responseBody = reader.ReadToEnd();
-                if(responseBody.IndexOf("<error code=") >= 0)
+                if (responseBody.IndexOf("<error code=") >= 0)
                     throw new Exception("Error when notifying indexer: " + responseBody);
-            }           
+            }
         }
 
         private bool ServerCertificateValidationCallback(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)

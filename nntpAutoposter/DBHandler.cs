@@ -1,229 +1,214 @@
-﻿using System;
+﻿using log4net;
+using Mono.Data.Sqlite;
+using System;
 using System.Collections.Generic;
-using System.Configuration;
 using System.Globalization;
 using System.IO;
-using System.Linq;
 using System.Reflection;
-using System.Text;
-using System.Threading.Tasks;
-using log4net;
-using Mono.Data.Sqlite;
-using Util;
 
 namespace nntpAutoposter
 {
     class DBHandler
     {
-        private static readonly ILog log = LogManager.GetLogger(
-            System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
-
-        private static Object lockObject = new Object();
-        private static DBHandler _instance;
-        public static DBHandler Instance
-        {
-            get
-            {
-                if(_instance == null)
-                {
-                    lock(lockObject)
-                    {
-                        if (_instance == null)
-                            _instance = new DBHandler();
-                    }
-                }
-                return _instance;
-            }
-        }
-
-        private String _connectionString;
+        private static readonly ILog log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
+        private static readonly Lazy<DBHandler> _lazyInstance = new Lazy<DBHandler>(() => new DBHandler());
+        public static DBHandler Instance => _lazyInstance.Value;
+        private static readonly object _lock = new object();
+        private readonly string _connectionString;
 
         private DBHandler()
         {
-            DetermineConnectionString();
+            _connectionString = BuildConnectionString();
             InitializeDatabase();
         }
 
-        private void DetermineConnectionString()
+        private static string BuildConnectionString()
         {
-            String codeBase = Assembly.GetExecutingAssembly().CodeBase;
-            UriBuilder uri = new UriBuilder(codeBase);
-            String path = Uri.UnescapeDataString(uri.Path);
-            String assemblyDirectory = Path.GetDirectoryName(path);
-
-            String dbFilePath = Path.Combine(assemblyDirectory, "nntpAutoPoster.Sqlite3.db");
-            _connectionString = String.Format("URI=file:{0},version=3", dbFilePath);
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string dbFilePath = Path.Combine(baseDir, "nntpAutoPoster.Sqlite3.db");
+            return $"URI=file:{dbFilePath},version=3";
         }
 
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Security", "CA2100:Review SQL queries for security vulnerabilities")]
         private void InitializeDatabase()
         {
-            List<DBScript> dbScripts = LoadDbScripts();
-            Int64 highestScriptVersion = (Int64)Math.Floor(
-                dbScripts.OrderByDescending(s => s.ScriptNumber).First().ScriptNumber);
-
-            lock(lockObject)
-            using (SqliteConnection conn = new SqliteConnection(_connectionString))
+            var scripts = LoadDbScripts();
+            if (scripts.Count == 0)
             {
-                conn.Open();
+                log.Debug("No DB scripts found; leaving database as-is.");
+                return;
+            }
 
-                Int64 dbVersion;
+            long highestScriptVersion = (long)Math.Floor(scripts[0].ScriptNumber);
 
-                using(SqliteCommand versionCmd = conn.CreateCommand())
+            lock (_lock)
+                using (var conn = new SqliteConnection(_connectionString))
                 {
-                    versionCmd.CommandText = "PRAGMA user_version";
-                    dbVersion = (Int64) versionCmd.ExecuteScalar();
-                    log.DebugFormat("Database version {0}", dbVersion);
-                }
+                    conn.Open();
 
-                if (dbVersion >= highestScriptVersion)
-                    return;
+                    long dbVersion;
+                    using (var versionCmd = conn.CreateCommand())
+                    {
+                        versionCmd.CommandText = "PRAGMA user_version";
+                        dbVersion = Convert.ToInt64(versionCmd.ExecuteScalar());
+                        log.DebugFormat("Database version {0}", dbVersion);
+                    }
 
-                log.DebugFormat("Updating database to version {0}", highestScriptVersion);
+                    if (dbVersion >= highestScriptVersion) return;
 
-                var scriptsToApply = dbScripts.Where(s => s.ScriptNumber >= dbVersion + 1).OrderBy(s => s.ScriptNumber);
+                    log.DebugFormat("Updating database to version {0}", highestScriptVersion);
 
-                using (SqliteTransaction trans = conn.BeginTransaction())
-                {
-                    using (SqliteCommand ddlCmd = conn.CreateCommand())
+                    using (var trans = conn.BeginTransaction())
+                    using (var ddlCmd = conn.CreateCommand())
                     {
                         ddlCmd.Transaction = trans;
-                        foreach(var script in scriptsToApply)
+
+                        for (int i = scripts.Count - 1; i >= 0; i--)
                         {
-                            ddlCmd.CommandText = script.DdlStatement;
-                            ddlCmd.ExecuteNonQuery();
+                            var s = scripts[i];
+                            if (s.ScriptNumber >= dbVersion + 1)
+                            {
+                                ddlCmd.CommandText = s.DdlStatement;
+                                ddlCmd.Parameters.Clear();
+                                ddlCmd.ExecuteNonQuery();
+                            }
                         }
+
                         ddlCmd.CommandText = "PRAGMA user_version = " + highestScriptVersion;
+                        ddlCmd.Parameters.Clear();
                         ddlCmd.ExecuteNonQuery();
+
+                        trans.Commit();
                     }
-                    trans.Commit();
                 }
-            }
         }
 
         private List<DBScript> LoadDbScripts()
         {
-            List<DBScript> scripts = new List<DBScript>();
-            DirectoryInfo scriptFolder = new DirectoryInfo("dbScripts");
-            if (!scriptFolder.Exists)
-                return scripts;
+            var scripts = new List<DBScript>(8);
+            var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            var scriptFolder = new DirectoryInfo(Path.Combine(baseDir, "dbScripts"));
 
-            foreach (FileInfo scriptFile in scriptFolder.GetFileSystemInfos("*.sql"))
+            if (!scriptFolder.Exists) return scripts;
+
+            foreach (var scriptFile in scriptFolder.EnumerateFiles("*.sql", SearchOption.TopDirectoryOnly))
             {
-                if (Decimal.TryParse(scriptFile.NameWithoutExtension(), 
-                    NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out Decimal scriptNumber))
+                decimal scriptNumber;
+                if (!decimal.TryParse(Path.GetFileNameWithoutExtension(scriptFile.Name),
+                                      NumberStyles.AllowDecimalPoint,
+                                      CultureInfo.InvariantCulture,
+                                      out scriptNumber))
                 {
-                    using(StreamReader reader = scriptFile.OpenText())
-                    {
-                        String ddl = reader.ReadToEnd();
-                        scripts.Add(new DBScript{
-                            ScriptNumber = scriptNumber,
-                            DdlStatement = ddl
-                        });
-                    }
+                    continue;
                 }
+
+                string ddl;
+                using (var reader = scriptFile.OpenText())
+                {
+                    ddl = reader.ReadToEnd();
+                }
+
+                scripts.Add(new DBScript
+                {
+                    ScriptNumber = scriptNumber,
+                    DdlStatement = ddl
+                });
             }
 
+            scripts.Sort((a, b) => b.ScriptNumber.CompareTo(a.ScriptNumber));
             return scripts;
         }
 
-        public void CleanUploadEntries(Int32 keepDays)
+        public void CleanUploadEntries(int keepDays)
         {
-            DateTime cutOffDateTime = DateTime.Now.AddDays(keepDays * -1);
+            DateTime cutOffDateTime = DateTime.Now.AddDays(-keepDays);
 
-            lock (lockObject)
-            using (SqliteConnection conn = new SqliteConnection(_connectionString))
-            {
-                conn.Open();
-                using (SqliteCommand cmd = conn.CreateCommand())
+            lock (_lock)
+                using (var conn = new SqliteConnection(_connectionString))
                 {
-                    cmd.CommandText = @"DELETE from UploadEntries 
+                    conn.Open();
+                    using (var cmd = conn.CreateCommand())
+                    {
+                        cmd.CommandText = @"DELETE FROM UploadEntries 
                                         WHERE CreatedAt <= @cutOffDateTime";
-                    cmd.Parameters.Add(new SqliteParameter("@cutOffDateTime", GetDbValue(cutOffDateTime)));
-                    Int32 linesDeleted = cmd.ExecuteNonQuery();
-                    log.InfoFormat("Cleaned {0} old entries from the database.", linesDeleted);
+                        cmd.Parameters.Add(new SqliteParameter("@cutOffDateTime", GetDbValue(cutOffDateTime)));
+                        int deleted = cmd.ExecuteNonQuery();
+                        log.InfoFormat("Cleaned {0} old entries from the database.", deleted);
+                    }
                 }
-            }
         }
 
         internal void Vacuum()
         {
-            lock (lockObject)
-            using (SqliteConnection conn = new SqliteConnection(_connectionString))
-            {
-                conn.Open();
-                using (SqliteCommand cmd = conn.CreateCommand())
+            lock (_lock)
+                using (var conn = new SqliteConnection(_connectionString))
                 {
-                    cmd.CommandText = @"VACUUM";
-                    Int32 linesDeleted = cmd.ExecuteNonQuery();
-                    log.Info("Vacuumed the database.");
+                    conn.Open();
+                    using (var cmd = conn.CreateCommand())
+                    {
+                        cmd.CommandText = "VACUUM";
+                        cmd.ExecuteNonQuery();
+                        log.Info("Vacuumed the database.");
+                    }
                 }
-            }
         }
 
         public UploadEntry GetNextUploadEntryToUpload()
         {
-            lock (lockObject)
-            using (SqliteConnection conn = new SqliteConnection(_connectionString))
-            {
-                conn.Open();
-                using (SqliteCommand cmd = conn.CreateCommand())
+            lock (_lock)
+                using (var conn = new SqliteConnection(_connectionString))
                 {
-                    cmd.CommandText = @"SELECT * from UploadEntries 
+                    conn.Open();
+                    using (var cmd = conn.CreateCommand())
+                    {
+                        cmd.CommandText = @"SELECT * FROM UploadEntries 
                                         WHERE UploadedAt IS NULL 
                                           AND Cancelled = 0
                                         ORDER BY PriorityNum DESC, CreatedAt ASC
                                         LIMIT 1";
-                    using (SqliteDataReader reader = cmd.ExecuteReader())
-                    {
-                        UploadEntry uploadEntry = null;
-                        if (reader.Read())
+                        using (var reader = cmd.ExecuteReader())
                         {
-                            uploadEntry = GetUploadEntryFromReader(reader);
+                            return reader.Read() ? GetUploadEntryFromReader(reader) : null;
                         }
-                        return uploadEntry;
                     }
                 }
-            }
         }
 
         public List<UploadEntry> GetUploadEntriesToNotifyIndexer()
         {
-            List<UploadEntry> uploadEntries = new List<UploadEntry>();
-            lock (lockObject)
-            using (SqliteConnection conn = new SqliteConnection(_connectionString))
-            {
-                conn.Open();
-                using (SqliteCommand cmd = conn.CreateCommand())
+            var list = new List<UploadEntry>(16);
+            lock (_lock)
+                using (var conn = new SqliteConnection(_connectionString))
                 {
-                    cmd.CommandText = @"SELECT * from UploadEntries 
+                    conn.Open();
+                    using (var cmd = conn.CreateCommand())
+                    {
+                        cmd.CommandText = @"SELECT * FROM UploadEntries 
                                         WHERE ObscuredName IS NOT NULL 
                                           AND NotifiedIndexerAt IS NULL
                                           AND UploadedAt IS NOT NULL
                                           AND Cancelled = 0
                                         ORDER BY CreatedAt ASC";
-                    using (SqliteDataReader reader = cmd.ExecuteReader())
-                    {
-                        while (reader.Read())
+                        using (var reader = cmd.ExecuteReader())
                         {
-                            uploadEntries.Add(GetUploadEntryFromReader(reader));
+                            while (reader.Read())
+                                list.Add(GetUploadEntryFromReader(reader));
                         }
                     }
                 }
-            }
-            return uploadEntries;
+            return list;
         }
 
         public List<UploadEntry> GetUploadEntriesToVerify()
         {
-            List<UploadEntry> uploadEntries = new List<UploadEntry>();
-            lock (lockObject)
-            using (SqliteConnection conn = new SqliteConnection(_connectionString))
-            {
-                conn.Open();
-                using (SqliteCommand cmd = conn.CreateCommand())
+            var list = new List<UploadEntry>(16);
+            lock (_lock)
+                using (var conn = new SqliteConnection(_connectionString))
                 {
-                    cmd.CommandText = @"SELECT * from UploadEntries 
+                    conn.Open();
+                    using (var cmd = conn.CreateCommand())
+                    {
+                        cmd.CommandText = @"SELECT * FROM UploadEntries 
                                         WHERE UploadedAt IS NOT NULL
                                           AND SeenOnIndexerAt IS NULL
                                           AND Cancelled = 0
@@ -233,109 +218,110 @@ namespace nntpAutoposter
                                             (ObscuredName IS NOT NULL AND NotifiedIndexerAt IS NOT NULL)
                                           )
                                         ORDER BY CreatedAt ASC";
-                    using (SqliteDataReader reader = cmd.ExecuteReader())
-                    {
-                        while (reader.Read())
+                        using (var reader = cmd.ExecuteReader())
                         {
-                            uploadEntries.Add(GetUploadEntryFromReader(reader));
+                            while (reader.Read())
+                                list.Add(GetUploadEntryFromReader(reader));
                         }
                     }
                 }
-            }
-            return uploadEntries;
+            return list;
         }
 
-        public UploadEntry GetActiveUploadEntry(String name)
+        public UploadEntry GetActiveUploadEntry(string name)
         {
-            lock (lockObject)
-            using (SqliteConnection conn = new SqliteConnection(_connectionString))
-            {
-                conn.Open();
-                using (SqliteCommand cmd = conn.CreateCommand())
+            lock (_lock)
+                using (var conn = new SqliteConnection(_connectionString))
                 {
-                    cmd.CommandText = @"SELECT * from UploadEntries 
-                                        WHERE Name = @name 
-                                            AND Cancelled = 0";
-                    cmd.Parameters.Add(new SqliteParameter("@name", name));
-                    using(SqliteDataReader reader = cmd.ExecuteReader())
+                    conn.Open();
+                    using (var cmd = conn.CreateCommand())
                     {
-                        UploadEntry uploadEntry = null;
-                        if(reader.Read())
+                        cmd.CommandText = @"SELECT * FROM UploadEntries 
+                                        WHERE Name = @name 
+                                          AND Cancelled = 0";
+                        cmd.Parameters.Add(new SqliteParameter("@name", name));
+                        using (var reader = cmd.ExecuteReader())
                         {
-                            uploadEntry = GetUploadEntryFromReader(reader);
+                            UploadEntry entry = null;
                             if (reader.Read())
                             {
-                                throw new Exception("Got more than one result matching this name. The database is not consistent.");
+                                entry = GetUploadEntryFromReader(reader);
+                                if (reader.Read())
+                                    throw new Exception("Got more than one result matching this name. The database is not consistent.");
                             }
+                            return entry;
                         }
-                        return uploadEntry;
                     }
                 }
-            }
         }
 
         public void AddNewUploadEntry(UploadEntry uploadEntry)
         {
-            lock (lockObject)
-            using (SqliteConnection conn = new SqliteConnection(_connectionString))
-            {
-                conn.Open();
-                using (SqliteTransaction trans = conn.BeginTransaction())
+            if (uploadEntry == null) throw new ArgumentNullException(nameof(uploadEntry));
+
+            lock (_lock)
+                using (var conn = new SqliteConnection(_connectionString))
                 {
-                    using (SqliteCommand cmd = conn.CreateCommand())
+                    conn.Open();
+                    using (var trans = conn.BeginTransaction())
+                    using (var cmd = conn.CreateCommand())
                     {
                         cmd.Transaction = trans;
-                        cmd.CommandText = @"UPDATE UploadEntries SET Cancelled = 1 WHERE Name = @name AND Cancelled = 0";
-                        cmd.Parameters.Add(new SqliteParameter("@name", uploadEntry.Name));
-                        Int32 cancelledEntries = cmd.ExecuteNonQuery();
-                        if(cancelledEntries > 0)
-                            log.InfoFormat("{0} upload entries were cancelled by a re-add of an existing upload.", cancelledEntries);
 
+                        cmd.CommandText = @"UPDATE UploadEntries 
+                                        SET Cancelled = 1 
+                                        WHERE Name = @name AND Cancelled = 0";
+                        cmd.Parameters.Add(new SqliteParameter("@name", uploadEntry.Name));
+                        int cancelled = cmd.ExecuteNonQuery();
+                        if (cancelled > 0)
+                            log.InfoFormat("{0} upload entries were cancelled by a re-add of an existing upload.", cancelled);
+
+                        cmd.Parameters.Clear();
                         cmd.CommandText = @"INSERT INTO UploadEntries(
-                                                            Name, 
-                                                            Size,
-                                                            CleanedName,
-                                                            ObscuredName,
-                                                            RemoveAfterVerify, 
-                                                            CreatedAt,
-                                                            UploadedAt,
-                                                            NotifiedIndexerAt,
-                                                            SeenOnIndexerAt,
-                                                            Cancelled,
-                                                            WatchFolderShortName,
-                                                            UploadAttempts,
-                                                            RarPassword,
-                                                            PriorityNum,
-                                                            NzbContents,
-                                                            IsRepost,
-                                                            NotificationCount,
-                                                            CurrentLocation,
-                                                            HasNfo)
-                                                    VALUES(
-                                                            @name,
-                                                            @size,
-                                                            @cleanedName,
-                                                            @ObscuredName,
-                                                            @removeAfterVerify,
-                                                            @createdAt, 
-                                                            @uploadedAt,
-                                                            @notifiedIndexerAt,
-                                                            @seenOnIndexerAt,
-                                                            @cancelled,
-                                                            @watchFolderShortName,
-                                                            @uploadAttempts,
-                                                            @rarPassword,
-                                                            @priorityNum,
-                                                            @nzbContents,
-                                                            @isRepost,
-                                                            @notificationCount,
-                                                            @currentLocation,
-                                                            @hasNfo)";
+                                            Name, 
+                                            Size,
+                                            CleanedName,
+                                            ObscuredName,
+                                            RemoveAfterVerify, 
+                                            CreatedAt,
+                                            UploadedAt,
+                                            NotifiedIndexerAt,
+                                            SeenOnIndexerAt,
+                                            Cancelled,
+                                            WatchFolderShortName,
+                                            UploadAttempts,
+                                            RarPassword,
+                                            PriorityNum,
+                                            NzbContents,
+                                            IsRepost,
+                                            NotificationCount,
+                                            CurrentLocation,
+                                            HasNfo)
+                                        VALUES(
+                                            @name,
+                                            @size,
+                                            @cleanedName,
+                                            @obscuredName,
+                                            @removeAfterVerify,
+                                            @createdAt, 
+                                            @uploadedAt,
+                                            @notifiedIndexerAt,
+                                            @seenOnIndexerAt,
+                                            @cancelled,
+                                            @watchFolderShortName,
+                                            @uploadAttempts,
+                                            @rarPassword,
+                                            @priorityNum,
+                                            @nzbContents,
+                                            @isRepost,
+                                            @notificationCount,
+                                            @currentLocation,
+                                            @hasNfo)";
                         cmd.Parameters.Add(new SqliteParameter("@name", uploadEntry.Name));
                         cmd.Parameters.Add(new SqliteParameter("@size", uploadEntry.Size));
                         cmd.Parameters.Add(new SqliteParameter("@cleanedName", uploadEntry.CleanedName));
-                        cmd.Parameters.Add(new SqliteParameter("@ObscuredName", uploadEntry.ObscuredName));
-                        cmd.Parameters.Add(new SqliteParameter("@removeAfterVerify", uploadEntry.RemoveAfterVerify));
+                        cmd.Parameters.Add(new SqliteParameter("@obscuredName", uploadEntry.ObscuredName));
+                        cmd.Parameters.Add(new SqliteParameter("@removeAfterVerify", GetDbValue(uploadEntry.RemoveAfterVerify)));
                         cmd.Parameters.Add(new SqliteParameter("@createdAt", GetDbValue(uploadEntry.CreatedAt)));
                         cmd.Parameters.Add(new SqliteParameter("@uploadedAt", GetDbValue(uploadEntry.UploadedAt)));
                         cmd.Parameters.Add(new SqliteParameter("@notifiedIndexerAt", GetDbValue(uploadEntry.NotifiedIndexerAt)));
@@ -352,27 +338,29 @@ namespace nntpAutoposter
                         cmd.Parameters.Add(new SqliteParameter("@hasNfo", GetDbValue(uploadEntry.HasNfo)));
                         cmd.ExecuteNonQuery();
 
-                        cmd.CommandText = "select last_insert_rowid()";
                         cmd.Parameters.Clear();
-                        uploadEntry.ID = (Int64)cmd.ExecuteScalar();                        
+                        cmd.CommandText = "SELECT last_insert_rowid()";
+                        uploadEntry.ID = Convert.ToInt64(cmd.ExecuteScalar());
+
+                        trans.Commit();
                     }
-                    trans.Commit();
                 }
-            }
         }
 
         public void UpdateUploadEntry(UploadEntry uploadEntry)
         {
-            lock (lockObject)
-            using (SqliteConnection conn = new SqliteConnection(_connectionString))
-            {
-                conn.Open();
-                using (SqliteCommand cmd = conn.CreateCommand())
+            if (uploadEntry == null) throw new ArgumentNullException(nameof(uploadEntry));
+
+            lock (_lock)
+                using (var conn = new SqliteConnection(_connectionString))
                 {
-                    cmd.CommandText = @"UPDATE UploadEntries SET 
+                    conn.Open();
+                    using (var cmd = conn.CreateCommand())
+                    {
+                        cmd.CommandText = @"UPDATE UploadEntries SET 
                                             Name = @name,
                                             CleanedName = @cleanedName,
-                                            ObscuredName = @ObscuredName,
+                                            ObscuredName = @obscuredName,
                                             RemoveAfterVerify = @removeAfterVerify,
                                             UploadedAt = @uploadedAt,
                                             NotifiedIndexerAt = @notifiedIndexerAt,
@@ -388,100 +376,84 @@ namespace nntpAutoposter
                                             CurrentLocation = @currentLocation,
                                             HasNfo = @hasNfo
                                         WHERE RowIDAlias = @rowIDAlias";
-                    cmd.Parameters.Add(new SqliteParameter("@name", uploadEntry.Name));
-                    cmd.Parameters.Add(new SqliteParameter("@cleanedName", uploadEntry.CleanedName));
-                    cmd.Parameters.Add(new SqliteParameter("@ObscuredName", uploadEntry.ObscuredName));                    
-                    cmd.Parameters.Add(new SqliteParameter("@removeAfterVerify", uploadEntry.RemoveAfterVerify));
-                    cmd.Parameters.Add(new SqliteParameter("@uploadedAt", GetDbValue(uploadEntry.UploadedAt)));
-                    cmd.Parameters.Add(new SqliteParameter("@notifiedIndexerAt", GetDbValue(uploadEntry.NotifiedIndexerAt)));
-                    cmd.Parameters.Add(new SqliteParameter("@seenOnIndexerAt", GetDbValue(uploadEntry.SeenOnIndexAt)));
-                    cmd.Parameters.Add(new SqliteParameter("@cancelled", GetDbValue(uploadEntry.Cancelled)));
-                    cmd.Parameters.Add(new SqliteParameter("@watchFolderShortName", uploadEntry.WatchFolderShortName));
-                    cmd.Parameters.Add(new SqliteParameter("@uploadAttempts", uploadEntry.UploadAttempts));
-                    cmd.Parameters.Add(new SqliteParameter("@rarPassword", uploadEntry.RarPassword));
-                    cmd.Parameters.Add(new SqliteParameter("@priorityNum", uploadEntry.PriorityNum));
-                    cmd.Parameters.Add(new SqliteParameter("@nzbContents", uploadEntry.NzbContents));
-                    cmd.Parameters.Add(new SqliteParameter("@isRepost", GetDbValue(uploadEntry.IsRepost)));
-                    cmd.Parameters.Add(new SqliteParameter("@notificationCount", uploadEntry.NotificationCount));
-                    cmd.Parameters.Add(new SqliteParameter("@currentLocation", GetDbValue(uploadEntry.CurrentLocation)));
-                    cmd.Parameters.Add(new SqliteParameter("@hasNfo", GetDbValue(uploadEntry.HasNfo)));
-                    cmd.Parameters.Add(new SqliteParameter("@rowIDAlias", uploadEntry.ID));
-                    
-                    cmd.ExecuteNonQuery();                   
+                        cmd.Parameters.Add(new SqliteParameter("@name", uploadEntry.Name));
+                        cmd.Parameters.Add(new SqliteParameter("@cleanedName", uploadEntry.CleanedName));
+                        cmd.Parameters.Add(new SqliteParameter("@obscuredName", uploadEntry.ObscuredName));
+                        cmd.Parameters.Add(new SqliteParameter("@removeAfterVerify", GetDbValue(uploadEntry.RemoveAfterVerify)));
+                        cmd.Parameters.Add(new SqliteParameter("@uploadedAt", GetDbValue(uploadEntry.UploadedAt)));
+                        cmd.Parameters.Add(new SqliteParameter("@notifiedIndexerAt", GetDbValue(uploadEntry.NotifiedIndexerAt)));
+                        cmd.Parameters.Add(new SqliteParameter("@seenOnIndexerAt", GetDbValue(uploadEntry.SeenOnIndexAt)));
+                        cmd.Parameters.Add(new SqliteParameter("@cancelled", GetDbValue(uploadEntry.Cancelled)));
+                        cmd.Parameters.Add(new SqliteParameter("@watchFolderShortName", uploadEntry.WatchFolderShortName));
+                        cmd.Parameters.Add(new SqliteParameter("@uploadAttempts", uploadEntry.UploadAttempts));
+                        cmd.Parameters.Add(new SqliteParameter("@rarPassword", uploadEntry.RarPassword));
+                        cmd.Parameters.Add(new SqliteParameter("@priorityNum", uploadEntry.PriorityNum));
+                        cmd.Parameters.Add(new SqliteParameter("@nzbContents", uploadEntry.NzbContents));
+                        cmd.Parameters.Add(new SqliteParameter("@isRepost", GetDbValue(uploadEntry.IsRepost)));
+                        cmd.Parameters.Add(new SqliteParameter("@notificationCount", uploadEntry.NotificationCount));
+                        cmd.Parameters.Add(new SqliteParameter("@currentLocation", GetDbValue(uploadEntry.CurrentLocation)));
+                        cmd.Parameters.Add(new SqliteParameter("@hasNfo", GetDbValue(uploadEntry.HasNfo)));
+                        cmd.Parameters.Add(new SqliteParameter("@rowIDAlias", uploadEntry.ID));
+                        cmd.ExecuteNonQuery();
+                    }
                 }
-            }
         }
 
         private static UploadEntry GetUploadEntryFromReader(SqliteDataReader reader)
         {
-#pragma warning disable IDE0017 // Simplify object initialization
-            UploadEntry uploadEntry = new UploadEntry();
-#pragma warning restore IDE0017 // Simplify object initialization
-
-            uploadEntry.ID = (Int64)reader["RowIDAlias"];
-            uploadEntry.Name = reader["Name"] as String;
-            uploadEntry.Size = (Int64)reader["Size"];
-            uploadEntry.CleanedName = reader["CleanedName"] as String;
-            uploadEntry.ObscuredName = reader["ObscuredName"] as String;
-            uploadEntry.RemoveAfterVerify = GetBoolean(reader["RemoveAfterVerify"]);
-            uploadEntry.CreatedAt = GetDateTime(reader["CreatedAt"]);
-            uploadEntry.UploadedAt = GetNullableDateTime(reader["UploadedAt"]);
-            uploadEntry.NotifiedIndexerAt = GetNullableDateTime(reader["NotifiedIndexerAt"]);
-            uploadEntry.SeenOnIndexAt = GetNullableDateTime(reader["SeenOnIndexerAt"]);
-            uploadEntry.Cancelled = GetBoolean(reader["Cancelled"]);
-            uploadEntry.WatchFolderShortName = reader["WatchFolderShortName"] as String;
-            uploadEntry.UploadAttempts = (Int64) reader["UploadAttempts"];
-            uploadEntry.RarPassword = reader["RarPassword"] as String;
-            uploadEntry.PriorityNum = (Int64)reader["PriorityNum"];
-            uploadEntry.NzbContents = reader["NzbContents"] as String;
-            uploadEntry.IsRepost = GetBoolean(reader["IsRepost"]);
-            uploadEntry.NotificationCount = (Int64)reader["NotificationCount"];
-            uploadEntry.CurrentLocation = GetLocation(reader["CurrentLocation"]);
-            uploadEntry.HasNfo = GetBoolean(reader["HasNfo"]);
+            var uploadEntry = new UploadEntry
+            {
+                ID = Convert.ToInt64(reader["RowIDAlias"]),
+                Name = reader["Name"] as string,
+                Size = Convert.ToInt64(reader["Size"]),
+                CleanedName = reader["CleanedName"] as string,
+                ObscuredName = reader["ObscuredName"] as string,
+                RemoveAfterVerify = GetBoolean(reader["RemoveAfterVerify"]),
+                CreatedAt = GetDateTime(reader["CreatedAt"]),
+                UploadedAt = GetNullableDateTime(reader["UploadedAt"]),
+                NotifiedIndexerAt = GetNullableDateTime(reader["NotifiedIndexerAt"]),
+                SeenOnIndexAt = GetNullableDateTime(reader["SeenOnIndexerAt"]),
+                Cancelled = GetBoolean(reader["Cancelled"]),
+                WatchFolderShortName = reader["WatchFolderShortName"] as string,
+                UploadAttempts = Convert.ToInt64(reader["UploadAttempts"]),
+                RarPassword = reader["RarPassword"] as string,
+                PriorityNum = Convert.ToInt64(reader["PriorityNum"]),
+                NzbContents = reader["NzbContents"] as string,
+                IsRepost = GetBoolean(reader["IsRepost"]),
+                NotificationCount = Convert.ToInt64(reader["NotificationCount"]),
+                CurrentLocation = GetLocation(reader["CurrentLocation"]),
+                HasNfo = GetBoolean(reader["HasNfo"])
+            };
 
             return uploadEntry;
         }
 
-        private static Object GetDbValue(Boolean boolean)
+        private static object GetDbValue(bool boolean) => boolean ? 1 : 0;
+
+        private static object GetDbValue(DateTime? dateTime)
         {
-            return boolean ? 1 : 0;
+            if (!dateTime.HasValue) return DBNull.Value;
+            return dateTime.Value.ToString("o", CultureInfo.InvariantCulture);
         }
 
-        private static Object GetDbValue(Nullable<DateTime> dateTime)
+        private static object GetDbValue(Location currentLocation) => (long)currentLocation;
+
+        private static bool GetBoolean(object dbValue) => Convert.ToInt64(dbValue) == 1;
+
+        private static DateTime GetDateTime(object dbValue)
         {
-            if (!dateTime.HasValue)
-                return DBNull.Value;
-            return dateTime.Value.ToString("o");
+            var s = dbValue as string;
+            return DateTime.Parse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
         }
 
-        private static Object GetDbValue(Location currentLocation)
+        private static DateTime? GetNullableDateTime(object dbValue)
         {
-            return (Int64)currentLocation;
+            var s = dbValue as string;
+            if (s == null) return null;
+            DateTime result;
+            return DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out result) ? (DateTime?)result : null;
         }
 
-        private static Boolean GetBoolean(Object dbValue)
-        {
-            Int64 boolValue = (Int64)dbValue;
-            return boolValue == 1;
-        }
-
-        private static DateTime GetDateTime(Object dbValue)
-        {
-            String dateTimeStr = dbValue as String;
-            return DateTime.Parse(dateTimeStr, null, DateTimeStyles.RoundtripKind);
-        }
-
-        private static Nullable<DateTime> GetNullableDateTime(Object dbValue)
-        {
-            if (dbValue is String dateTimeStr && DateTime.TryParse(dateTimeStr, null, DateTimeStyles.RoundtripKind, out DateTime result))
-                return result;
-
-            return null;
-        }
-
-        private static Location GetLocation(Object dbValue)
-        {
-            return (Location)(Int64)dbValue;
-        }
+        private static Location GetLocation(object dbValue) => (Location)Convert.ToInt64(dbValue);
     }
 }

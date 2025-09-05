@@ -1,52 +1,56 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace ExternalProcessWrappers
 {
     public class RarWrapper : ExternalProcessWrapperBase
     {
-        protected override string ProcessPathLocation
-        {
-            get { return "rar"; }
-        }
+        protected override string ProcessPathLocation => "rar";
 
-        public RarWrapper(Int32 inactiveProcessTimeout)
+        public RarWrapper(int inactiveProcessTimeout)
             : base(inactiveProcessTimeout)
         {
         }
 
-        public RarWrapper(Int32 inactiveProcessTimeout, String rarLocation) : base(inactiveProcessTimeout, rarLocation)
+        public RarWrapper(int inactiveProcessTimeout, string rarLocation)
+            : base(inactiveProcessTimeout, rarLocation)
         {
         }
 
-        public void Compress(FileSystemInfo source, DirectoryInfo destination, String archiveName, 
-            Int32 partSize, String password, String extraParams)
+        public void Compress(FileSystemInfo source, DirectoryInfo destination, string archiveName,
+                             int partSize, string password, string extraParams)
         {
-            String toCompress;
-            FileAttributes attributes = File.GetAttributes(source.FullName);
-            if (attributes.HasFlag(FileAttributes.Directory))
-                toCompress = Path.Combine(source.FullName, "*");
+            if (source == null) throw new ArgumentNullException(nameof(source));
+            if (destination == null) throw new ArgumentNullException(nameof(destination));
+            if (string.IsNullOrWhiteSpace(archiveName)) throw new ArgumentException("Archive name is required.", nameof(archiveName));
+            if (partSize <= 0) throw new ArgumentOutOfRangeException(nameof(partSize), "Part size must be > 0.");
+            if (!destination.Exists) destination.Create();
+
+            string inputArg;
+            var attrs = File.GetAttributes(source.FullName);
+            if ((attrs & FileAttributes.Directory) == FileAttributes.Directory)
+            {
+                inputArg = Path.Combine(source.FullName, "*");
+            }
             else
-                toCompress = source.FullName;
+            {
+                inputArg = source.FullName;
+            }
 
-            String passwordParam = String.Empty;
-            if (!String.IsNullOrWhiteSpace(password))
-                passwordParam = "-hp\"" + password + "\"";
+            string passwordArg = string.IsNullOrWhiteSpace(password) ? string.Empty : $"-hp{Quote(password)}";
+            string extra = string.IsNullOrWhiteSpace(extraParams) ? string.Empty : extraParams.Trim();
+            string archiveBase = Path.Combine(destination.FullName, archiveName);
+            string args =
+                $"a -ep1 {passwordArg} -m0 -r -v{partSize}b {extra} {Quote(archiveBase)} {Quote(inputArg)}";
 
-            String rarParameters = String.Format("a -ep1 {0} -m0 -r -v{1}b {4} \"{2}\" \"{3}\" ",
-                passwordParam,
-                partSize,
-                Path.Combine(destination.FullName, archiveName),
-                toCompress,
-                extraParams
-            );
+            ExecuteProcess(args);
+        }
 
-            this.ExecuteProcess(rarParameters);
+        private static string Quote(string value)
+        {
+            if (value == null) return "\"\"";
+            string escaped = value.Replace("\"", "\"\"");
+            return $"\"{escaped}\"";
         }
     }
 }

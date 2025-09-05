@@ -1,10 +1,6 @@
 ﻿using log4net;
 using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using Util;
 using Util.Configuration;
 
@@ -15,96 +11,157 @@ namespace nntpAutoposter
         private static readonly ILog log = LogManager.GetLogger(
             System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
-        public Int64 ID { get; set; }
-        public String Name { get; set; }
-        public Int64 Size { get; set; }
-        public String CleanedName { get; set; }
-        public String ObscuredName { get; set; }
-        public Boolean RemoveAfterVerify { get; set; }
+        public long ID { get; set; }
+        public string Name { get; set; }
+        public long Size { get; set; }
+        public string CleanedName { get; set; }
+        public string ObscuredName { get; set; }
+        public bool RemoveAfterVerify { get; set; }
         public DateTime CreatedAt { get; set; }
-        public Nullable<DateTime> UploadedAt { get; set; }
-        public Nullable<DateTime> NotifiedIndexerAt { get; set; }
-        public Nullable<DateTime> SeenOnIndexAt { get; set; }
-        public Boolean Cancelled { get; set; }
-        public String WatchFolderShortName { get; set; }
-        public Int64 UploadAttempts { get; set; }
-        public String RarPassword { get; set; }
-        public Int64 PriorityNum { get; set; }
-        public String NzbContents { get; set; }
-        public Boolean IsRepost { get; set; }
-        public Int64 NotificationCount { get; set; }
+        public DateTime? UploadedAt { get; set; }
+        public DateTime? NotifiedIndexerAt { get; set; }
+        public DateTime? SeenOnIndexAt { get; set; }
+        public bool Cancelled { get; set; }
+        public string WatchFolderShortName { get; set; }
+        public long UploadAttempts { get; set; }
+        public string RarPassword { get; set; }
+        public long PriorityNum { get; set; }
+        public string NzbContents { get; set; }
+        public bool IsRepost { get; set; }
+        public long NotificationCount { get; set; }
         public Location CurrentLocation { get; set; }
-        public Boolean HasNfo { get; set; }
+        public bool HasNfo { get; set; }
 
         public void Move(Settings configuration, Location newLocation)
         {
-            if(CurrentLocation == newLocation)
+            if (CurrentLocation == newLocation)
             {
                 log.WarnFormat("Upload is already at the '{0}' location, cancelling move.", CurrentLocation);
                 return;
             }
-            
-            DirectoryInfo targetFolder = DetermineTargetLocation(configuration, newLocation);
-            String sourceFullPath = GetCurrentPath(configuration, Name);
+
+            var targetFolder = DetermineTargetLocation(configuration, newLocation);
+            EnsureDirectory(targetFolder);
+
+            var sourceFullPath = GetCurrentPath(configuration, Name);
 
             try
             {
-
-                FileSystemInfo fso;
-                FileAttributes attributes = File.GetAttributes(sourceFullPath);
-                if (attributes.HasFlag(FileAttributes.Directory))
-                {
-                    fso = new DirectoryInfo(sourceFullPath);
-                }
-                else
-                {
-                    fso = new FileInfo(sourceFullPath);
-                }
-
-                var nameWithoutExtension = fso.NameWithoutExtension();
-
+                FileSystemInfo fso = GetFso(sourceFullPath, out string nameWithoutExtension);
                 fso.Move(targetFolder);
 
                 if (HasNfo)
                 {
                     try
                     {
-                        String nfoFullPath = GetCurrentPath(configuration, nameWithoutExtension + ".nfo");
-                        FileInfo sourceNfo = new FileInfo(nfoFullPath);
-                        sourceNfo.Move(targetFolder);
+                        var nfoFullPath = GetCurrentPath(configuration, nameWithoutExtension + ".nfo");
+                        var sourceNfo = new FileInfo(nfoFullPath);
+                        if (sourceNfo.Exists)
+                        {
+                            sourceNfo.Move(targetFolder);
+                        }
+                        else
+                        {
+                            log.Warn("Can no longer find the .nfo for this upload, removing HasNfo tag.");
+                            HasNfo = false;
+                        }
                     }
                     catch (FileNotFoundException)
                     {
-                        log.WarnFormat("Can no longer find the .nfo for this upload, removing HasNfo tag.");
+                        log.Warn("Can no longer find the .nfo for this upload, removing HasNfo tag.");
                         HasNfo = false;
                     }
                 }
+
+                CurrentLocation = newLocation;
             }
             catch (FileNotFoundException)
             {
                 log.WarnFormat("Can no longer find '{0}', cancelling move.", sourceFullPath);
                 CurrentLocation = Location.None;
             }
-            CurrentLocation = newLocation;            
-        }
-
-        private DirectoryInfo DetermineTargetLocation(Settings configuration, Location newLocation)
-        {
-            switch(newLocation)
+            catch (DirectoryNotFoundException ex)
             {
-                case Location.Queue:
-                    return new DirectoryInfo(Path.Combine(configuration.QueueFolder.FullName, WatchFolderShortName));
-                case Location.Backup:
-                    return new DirectoryInfo(Path.Combine(configuration.BackupFolder.FullName, WatchFolderShortName));
-                case Location.Failed:
-                    return new DirectoryInfo(Path.Combine(configuration.PostFailedFolder.FullName, WatchFolderShortName));
+                log.Warn("Directory not found during move operation.", ex);
+                CurrentLocation = Location.None;
             }
-            throw new Exception("Target path can only be Queue, Backup or Failed");
+            catch (IOException ex)
+            {
+                log.Warn("I/O error during move operation.", ex);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                log.Warn("Access denied during move operation.", ex);
+            }
         }
 
-        public String GetCurrentPath(Settings configuration, String fileName)
+        public void Delete(Settings configuration)
         {
-            switch(CurrentLocation)
+            var fullPath = GetCurrentPath(configuration, Name);
+
+            try
+            {
+                FileSystemInfo fso = GetFso(fullPath, out string nameWithoutExtension);
+
+                if (fso is DirectoryInfo)
+                {
+                    Directory.Delete(fullPath, true);
+                }
+                else
+                {
+                    File.Delete(fullPath);
+                }
+
+                if (HasNfo)
+                {
+                    try
+                    {
+                        var nfoFullPath = GetCurrentPath(configuration, nameWithoutExtension + ".nfo");
+                        if (File.Exists(nfoFullPath))
+                        {
+                            File.Delete(nfoFullPath);
+                        }
+                        else
+                        {
+                            log.Warn("Can no longer find the .nfo for this upload, removing HasNfo tag. cannot delete.");
+                            HasNfo = false;
+                        }
+                    }
+                    catch (FileNotFoundException)
+                    {
+                        log.Warn("Can no longer find the .nfo for this upload, removing HasNfo tag. cannot delete.");
+                        HasNfo = false;
+                    }
+                }
+
+                CurrentLocation = Location.None;
+            }
+            catch (FileNotFoundException)
+            {
+                log.WarnFormat("Can no longer find '{0}', cannot delete.", fullPath);
+                CurrentLocation = Location.None;
+            }
+            catch (DirectoryNotFoundException ex)
+            {
+                log.Warn("Directory not found during delete operation.", ex);
+                CurrentLocation = Location.None;
+            }
+            catch (IOException ex)
+            {
+                log.Warn("I/O error during delete operation.", ex);
+                // Location becomes None since the main file is likely gone or broken
+                CurrentLocation = Location.None;
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                log.Warn("Access denied during delete operation.", ex);
+                // Don't change CurrentLocation in this case
+            }
+        }
+
+        public string GetCurrentPath(Settings configuration, string fileName)
+        {
+            switch (CurrentLocation)
             {
                 case Location.Watch:
                     return Path.Combine(configuration.GetWatchFolderSettings(WatchFolderShortName).Path.FullName, fileName);
@@ -114,51 +171,48 @@ namespace nntpAutoposter
                     return Path.Combine(configuration.BackupFolder.FullName, WatchFolderShortName, fileName);
                 case Location.Failed:
                     return Path.Combine(configuration.PostFailedFolder.FullName, WatchFolderShortName, fileName);
+                default:
+                    throw new Exception($"Current path of '{fileName}' cannot be determined.");
             }
-            throw new Exception(String.Format("Current path of '{0}' cannot be determined.", fileName));
         }
 
-        public void Delete(Settings configuration)
+        private DirectoryInfo DetermineTargetLocation(Settings configuration, Location newLocation)
         {
-            String fullPath = GetCurrentPath(configuration, Name);
-            
-            try
+            switch (newLocation)
             {
-                FileSystemInfo fso;
-                FileAttributes attributes = File.GetAttributes(fullPath);
-                var nameWithoutExtension = "";
-                if (attributes.HasFlag(FileAttributes.Directory))
-                {
-                    nameWithoutExtension = new DirectoryInfo(fullPath).NameWithoutExtension();
-                    Directory.Delete(fullPath, true);
-                }
-                else
-                {
-                    nameWithoutExtension = new FileInfo(fullPath).NameWithoutExtension();
-                    File.Delete(fullPath);
-                }
+                case Location.Queue:
+                    return new DirectoryInfo(Path.Combine(configuration.QueueFolder.FullName, WatchFolderShortName));
+                case Location.Backup:
+                    return new DirectoryInfo(Path.Combine(configuration.BackupFolder.FullName, WatchFolderShortName));
+                case Location.Failed:
+                    return new DirectoryInfo(Path.Combine(configuration.PostFailedFolder.FullName, WatchFolderShortName));
+                default:
+                    throw new Exception("Target path can only be Queue, Backup or Failed");
+            }
+        }
 
-                if (HasNfo)
-                {
-                    try
-                    {
-                        String nfoFullPath = GetCurrentPath(configuration, nameWithoutExtension + ".nfo");
-                        File.Delete(nfoFullPath);
-                    }
-                    catch (FileNotFoundException)
-                    {
-                        log.WarnFormat("Can no longer find the .nfo for this upload, removing HasNfo tag. cannot delete.");
-                        HasNfo = false;
-                    }
-                }
-            }
-            catch (FileNotFoundException)
+        private static void EnsureDirectory(DirectoryInfo dir)
+        {
+            if (!dir.Exists) dir.Create();
+        }
+
+        /// <summary>
+        /// Resolve a path to FileInfo/DirectoryInfo and return nameWithoutExtension without extra allocations later.
+        /// </summary>
+        private static FileSystemInfo GetFso(string fullPath, out string nameWithoutExtension)
+        {
+            var attrs = File.GetAttributes(fullPath);
+            if ((attrs & FileAttributes.Directory) == FileAttributes.Directory)
             {
-                log.WarnFormat("Can no longer find '{0}', cannot delete.", fullPath);                
+                var di = new DirectoryInfo(fullPath);
+                nameWithoutExtension = di.NameWithoutExtension();
+                return di;
             }
-            finally
+            else
             {
-                CurrentLocation = Location.None;
+                var fi = new FileInfo(fullPath);
+                nameWithoutExtension = fi.NameWithoutExtension();
+                return fi;
             }
         }
     }

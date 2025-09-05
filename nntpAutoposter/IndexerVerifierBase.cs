@@ -1,17 +1,8 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using log4net;
+using System;
 using System.IO;
-using System.Linq;
-using System.Net;
-using System.Net.Http;
-using System.Security.Principal;
-using System.ServiceModel.Syndication;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Xml;
-using log4net;
-using Util;
 using Util.Configuration;
 
 namespace nntpAutoposter
@@ -21,35 +12,28 @@ namespace nntpAutoposter
         protected static readonly ILog log = LogManager.GetLogger(
             System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
-        private Object monitor = new Object();
-        private Task MyTask;
-        private Boolean StopRequested;
+        private Task _workerTask;
+        private CancellationTokenSource _cts;
 
         protected Settings Configuration { get; set; }
 
         public static IndexerVerifierBase GetActiveVerifier(Settings configuration)
         {
             if ("NewznabSearch".Equals(configuration.VerificationType, StringComparison.InvariantCultureIgnoreCase))
-            {
                 return new IndexerVerifierNewznabSearch(configuration);
-            }            
 
-            if("PostVerify".Equals(configuration.VerificationType, StringComparison.InvariantCultureIgnoreCase))
-            {
+            if ("PostVerify".Equals(configuration.VerificationType, StringComparison.InvariantCultureIgnoreCase))
                 return new IndexerVerifierPostVerify(configuration);
-            }
 
-            if("Dummy".Equals(configuration.VerificationType, StringComparison.InvariantCultureIgnoreCase))
-            {
+            if ("Dummy".Equals(configuration.VerificationType, StringComparison.InvariantCultureIgnoreCase))
                 return new IndexerVerifierDummy(configuration);
-            }
 
-            if (!String.IsNullOrEmpty(configuration.VerificationType))
-                log.WarnFormat("{0} is an unknown verification type. Valid values are 'NewznabSearch', 'PostVerify' and 'Dummy'");
+            if (!string.IsNullOrEmpty(configuration.VerificationType))
+                log.WarnFormat("{0} is an unknown verification type. Valid values are 'NewznabSearch', 'PostVerify' and 'Dummy'", configuration.VerificationType);
             else
-                log.InfoFormat("No verification type defined in configuration.");
-            
-            if(configuration.BackupFolder != null)
+                log.Info("No verification type defined in configuration.");
+
+            if (configuration.BackupFolder != null)
                 log.Warn("You will have to clean up the backup directory manually or your disk will fill up.");
 
             return null;
@@ -57,67 +41,95 @@ namespace nntpAutoposter
 
         protected IndexerVerifierBase(Settings configuration)
         {
-            this.Configuration = configuration;
-            StopRequested = false;
-            MyTask = new Task(IndexerVerifierTask, TaskCreationOptions.LongRunning);
+            Configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         }
 
         public void Start()
         {
-            MyTask.Start();
+            _cts = new CancellationTokenSource();
+            _workerTask = Task.Factory.StartNew(
+                () => IndexerVerifierLoop(_cts.Token),
+                _cts.Token,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
         }
 
-        public void Stop(Int32 millisecondsTimeout = Timeout.Infinite)
+        public void Stop(int millisecondsTimeout = Timeout.Infinite)
         {
-            lock (monitor)
+            var localTask = _workerTask;
+            var localCts = _cts;
+
+            if (localCts != null && !localCts.IsCancellationRequested)
             {
-                StopRequested = true;
-                Monitor.Pulse(monitor);
+                try { localCts.Cancel(); } catch { /* ignore */ }
             }
-            MyTask.Wait(millisecondsTimeout);
+
+            if (localTask == null) return;
+
+            try
+            {
+                localTask.Wait(millisecondsTimeout);
+            }
+            catch (AggregateException ae)
+            {
+                ae.Handle(ex =>
+                {
+                    if (ex is OperationCanceledException) return true;
+                    log.Warn("Indexer verifier task ended with an exception.", ex);
+                    return true;
+                });
+            }
         }
 
-        private void IndexerVerifierTask()
+        private void IndexerVerifierLoop(CancellationToken ct)
         {
-            while (!StopRequested)
+            var interval = TimeSpan.FromMinutes(
+                Configuration.VerifierIntervalMinutes > 0 ? Configuration.VerifierIntervalMinutes : 1);
+
+            while (!ct.IsCancellationRequested)
             {
-                VerifyUploadsOnIndexer();
-                lock (monitor)
+                try
                 {
-                    if (StopRequested)
-                    {
-                        break;
-                    }
-                    Monitor.Wait(monitor, new TimeSpan(0, Configuration.VerifierIntervalMinutes, 0));
+                    VerifyUploadsOnIndexer();
                 }
+                catch (Exception ex)
+                {
+                    log.Fatal("Fatal exception in the indexer verifier task.", ex);
+                    Environment.Exit(1);
+                }
+
+                if (ct.WaitHandle.WaitOne(interval)) break;
             }
         }
 
         private void VerifyUploadsOnIndexer()
         {
-            foreach (var upload in DBHandler.Instance.GetUploadEntriesToVerify())
+            var toVerify = DBHandler.Instance.GetUploadEntriesToVerify();
+            foreach (var upload in toVerify)
             {
                 try
                 {
-                    String fullPath = upload.GetCurrentPath(Configuration, upload.Name);
-                    
-                    Boolean backupExists = false;
-                    backupExists = Directory.Exists(fullPath);
-                    if (!backupExists)
-                        backupExists = File.Exists(fullPath);
+                    var fullPath = upload.GetCurrentPath(Configuration, upload.Name);
 
+                    var backupExists = Directory.Exists(fullPath) || File.Exists(fullPath);
                     if (!backupExists)
                     {
-                        log.WarnFormat("The upload [{0}] was removed from the backup folder, cancelling verification.", 
-                            upload.Name);
+                        log.WarnFormat("The upload [{0}] was removed from the backup folder, cancelling verification.", upload.Name);
                         upload.Cancelled = true;
                         DBHandler.Instance.UpdateUploadEntry(upload);
                         continue;
                     }
 
-                    if ((DateTime.UtcNow - upload.UploadedAt.Value).TotalMinutes < Configuration.VerifyAfterMinutes)
+                    if (!upload.UploadedAt.HasValue)
                     {
-                        log.DebugFormat("The upload [{0}] is younger than {1} minutes. Skipping check.", 
+                        log.DebugFormat("Upload [{0}] has no UploadedAt; skipping.", upload.CleanedName);
+                        continue;
+                    }
+
+                    var ageMinutes = (DateTime.UtcNow - upload.UploadedAt.Value).TotalMinutes;
+                    if (ageMinutes < Configuration.VerifyAfterMinutes)
+                    {
+                        log.DebugFormat("The upload [{0}] is younger than {1} minutes. Skipping check.",
                             upload.CleanedName, Configuration.VerifyAfterMinutes);
                         continue;
                     }
@@ -126,7 +138,7 @@ namespace nntpAutoposter
                 }
                 catch (Exception ex)
                 {
-                    log.Error(String.Format("Could not verify release [{0}] on index:", upload.CleanedName), ex);
+                    log.Error(string.Format("Could not verify release [{0}] on index:", upload.CleanedName), ex);
                 }
             }
         }
@@ -146,32 +158,37 @@ namespace nntpAutoposter
             }
             else
             {
-                log.WarnFormat(
-                    "Release [{0}] has NOT been found on the indexer. Checking if a repost is required.",
+                log.WarnFormat("Release [{0}] has NOT been found on the indexer. Checking if a repost is required.",
                     upload.CleanedName);
                 RepostIfRequired(upload);
             }
         }
 
-
         protected virtual void RepostIfRequired(UploadEntry upload)
         {
+            if (!upload.UploadedAt.HasValue)
+            {
+                log.DebugFormat("Upload [{0}] has no UploadedAt; skipping repost check.", upload.CleanedName);
+                return;
+            }
+
             var ageInMinutes = (DateTime.UtcNow - upload.UploadedAt.Value).TotalMinutes;
 
             if (ageInMinutes > Configuration.RepostAfterMinutes)
             {
-                log.WarnFormat("Could not find [{0}] after {1} minutes, reposting, attempt {2}", upload.CleanedName, Configuration.RepostAfterMinutes, upload.UploadAttempts);
+                log.WarnFormat("Could not find [{0}] after {1} minutes, reposting, attempt {2}",
+                    upload.CleanedName, Configuration.RepostAfterMinutes, upload.UploadAttempts);
                 upload.UploadedAt = null;
                 upload.Move(Configuration, Location.Queue);
-
                 DBHandler.Instance.UpdateUploadEntry(upload);
             }
             else
             {
-                log.InfoFormat("A repost of [{0}] is not required as {1} minutes have not passed since upload.", upload.CleanedName, Configuration.RepostAfterMinutes);
-            }           
+                log.InfoFormat("A repost of [{0}] is not required as {1} minutes have not passed since upload.",
+                    upload.CleanedName, Configuration.RepostAfterMinutes);
+            }
         }
 
-        protected abstract Boolean UploadIsOnIndexer(UploadEntry upload);
+        protected abstract bool UploadIsOnIndexer(UploadEntry upload);
     }
 }

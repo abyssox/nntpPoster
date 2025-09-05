@@ -1,53 +1,60 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using System.Globalization;
 
 namespace nntpPoster
 {
     public class UploadSpeedReport
     {
-        public Int32 TotalParts { get; set; }
-        public Int32 UploadedParts { get; set; }
-        public Double BytesPerSecond { get; set; }
-        public String CurrentlyPostingName { get; set; }
+        public int TotalParts { get; set; }
+        public int UploadedParts { get; set; }
+        public double BytesPerSecond { get; set; }
+        public string CurrentlyPostingName { get; set; }
 
         public override string ToString()
         {
-            var tpl = TotalParts.ToString().Length;
+            int tpl = TotalParts > 0 ? TotalParts.ToString(CultureInfo.InvariantCulture).Length : 1;
 
-            return String.Format("{0," + tpl + "} of {1} parts uploaded at {2}", UploadedParts, TotalParts,
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "{0," + tpl + "} of {1} parts uploaded at {2}",
+                UploadedParts,
+                TotalParts,
                 GetHumanReadableSpeed(BytesPerSecond));
-
         }
 
-        public static String GetHumanReadableSpeed(Double bytesPerSecond)
+        public static string GetHumanReadableSpeed(double bytesPerSecond)
         {
+            if (double.IsNaN(bytesPerSecond) || double.IsInfinity(bytesPerSecond) || bytesPerSecond < 0)
+                bytesPerSecond = 0d;
+
             return GetHumanReadableSize(bytesPerSecond) + "/sec";
         }
 
-        public static String GetHumanReadableSize(Double bytes)
+        public static string GetHumanReadableSize(double bytes)
         {
-            Double roundedValue;
-            String unit;
-            if (bytes > 1024 * 1024)
+            const double KB = 1024d;
+            const double MB = 1024d * 1024d;
+
+            double value;
+            string unit;
+
+            if (bytes > MB)
             {
-                roundedValue = Math.Round(bytes / (1024 * 1024), 2, MidpointRounding.AwayFromZero);
+                value = Math.Round(bytes / MB, 2, MidpointRounding.AwayFromZero);
                 unit = "MB";
             }
-            else if (bytes > 1024)
+            else if (bytes > KB)
             {
-                roundedValue = Math.Round(bytes / 1024, 0, MidpointRounding.AwayFromZero);
+                value = Math.Round(bytes / KB, 0, MidpointRounding.AwayFromZero);
                 unit = "KB";
             }
             else
             {
-                roundedValue = Math.Round(bytes, 0, MidpointRounding.AwayFromZero);
+                value = Math.Round(bytes, 0, MidpointRounding.AwayFromZero);
                 unit = "Bytes";
             }
 
-            return roundedValue.ToString("0.00") + " " + unit;
+            return value.ToString("0.00", CultureInfo.InvariantCulture) + " " + unit;
         }
     }
 }

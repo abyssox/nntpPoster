@@ -1,12 +1,10 @@
 using System;
-using System.Text;
-using System.Security.Cryptography;
 
 namespace nntpPoster.yEncLib
 {
-	public class YEncEncoder
-	{
-		const Byte delta = 42;
+    public class YEncEncoder
+    {
+        const Byte delta = 42;
         const Byte escapeAdditionalDelta = 64;
         const Byte escapeByte = 61;
         const Byte dot = 46;
@@ -32,7 +30,7 @@ namespace nntpPoster.yEncLib
                 Boolean escape = false;
                 Byte e = EncodeByte(b, out escape);
                 if (escape)
-                {                    
+                {
                     buffer[position] = escapeByte;
                     position++;
                     isStartOfLine = false;  //If we have an escape char as first byte it is not a dot.
@@ -40,7 +38,7 @@ namespace nntpPoster.yEncLib
                 if (isStartOfLine)
                 {
                     isStartOfLine = false;
-                    if(e == dot)
+                    if (e == dot)
                     {
                         buffer[position] = dot;
                         position++;
@@ -50,7 +48,7 @@ namespace nntpPoster.yEncLib
                 buffer[position] = e;
                 position++;
 
-                if( (i + 1) % lineLength == 0)  //We add a newline every lineLength BYTES of the source input. The encoded line length might differ depending on number of escaped characters.
+                if ((i + 1) % lineLength == 0)  //We add a newline every lineLength BYTES of the source input. The encoded line length might differ depending on number of escaped characters.
                 {
                     buffer[position] = 13;
                     position++;
@@ -76,20 +74,20 @@ namespace nntpPoster.yEncLib
             return output;
         }
 
-		/// <summary>
-		/// Encodes a single byte.
-		/// </summary>
-		/// <param name="b">Byte to encode</param>
-		/// <param name="escape">returns true if the returned byte needs to be escaped</param>
-		/// <returns>the encoded byte</returns>
+        /// <summary>
+        /// Encodes a single byte.
+        /// </summary>
+        /// <param name="b">Byte to encode</param>
+        /// <param name="escape">returns true if the returned byte needs to be escaped</param>
+        /// <returns>the encoded byte</returns>
         private Byte EncodeByte(Byte b, out Boolean escape)
-		{
+        {
             unchecked       //unchecked, so we wrap aroundthe byte due to overflow.
-			{
-				b += delta;
+            {
+                b += delta;
 
-				escape = false;
-                foreach(byte escb in escapeBytes)
+                escape = false;
+                foreach (byte escb in escapeBytes)
                 {
                     if (b == escb)
                     {
@@ -98,9 +96,9 @@ namespace nntpPoster.yEncLib
                         break;
                     }
                 }
-			}
+            }
 
-			return b;
-		}
-	}
+            return b;
+        }
+    }
 }

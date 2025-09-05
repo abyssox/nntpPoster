@@ -1,15 +1,8 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Diagnostics;
-using System.IO;
-using System.Linq;
-using System.ServiceProcess;
-using System.Text;
-using System.Threading.Tasks;
-using log4net;
+﻿using log4net;
 using nntpAutoposter;
+using System;
+using System.IO;
+using System.ServiceProcess;
 using Util.Configuration;
 
 namespace nntpAutoPosterWindowsService
@@ -47,7 +40,8 @@ namespace nntpAutoPosterWindowsService
                 poster.Start();
                 log.Info("Autoposter started");
 
-                if (configuration.NotificationEnabled) { 
+                if (configuration.NotificationEnabled)
+                {
                     notifier = IndexerNotifierBase.GetActiveNotifier(configuration);
                     if (notifier != null)
                     {
@@ -58,7 +52,8 @@ namespace nntpAutoPosterWindowsService
                     {
                         log.Info("No notifier");
                     }
-                } else
+                }
+                else
                 {
                     log.Info("Notifications disabled");
                 }
@@ -123,7 +118,7 @@ namespace nntpAutoPosterWindowsService
         {
             OnStart(null);
         }
-        
+
         protected override void OnStop()
         {
             try
@@ -144,16 +139,16 @@ namespace nntpAutoPosterWindowsService
                 {
                     notifier.Stop(2000);
                     log.Info("Notifier stopped");
-                }                
+                }
 
                 poster.Stop(20000);
                 log.Info("Autoposter stopped");
             }
-              catch (Exception ex)
-              {
-                  log.Fatal("Fatal exception when stopping the autoposter.", ex);
-                  throw;
-              }
+            catch (Exception ex)
+            {
+                log.Fatal("Fatal exception when stopping the autoposter.", ex);
+                throw;
+            }
         }
     }
 }

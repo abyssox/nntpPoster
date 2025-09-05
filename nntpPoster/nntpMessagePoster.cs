@@ -1,12 +1,11 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
-using log4net;
+﻿using log4net;
 using nntpPoster.yEncLib;
 using PostingNntpClient;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Util.Configuration;
 
 namespace nntpPoster
@@ -36,7 +35,7 @@ namespace nntpPoster
                 UseSsl = configuration.NewsGroupUseSsl,
                 Username = configuration.NewsGroupUsername,
                 Password = configuration.NewsGroupPassword,
-                TcpTimeoutSeconds = configuration.NntpConnectionTimeoutSeconds                
+                TcpTimeoutSeconds = configuration.NntpConnectionTimeoutSeconds
             };
 
             MessagesToPost = new Queue<NntpMessage>();

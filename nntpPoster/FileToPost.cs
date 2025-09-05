@@ -1,13 +1,10 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using log4net;
+﻿using log4net;
 using nntpPoster.yEncLib;
-using Util.Configuration;
+using System;
+using System.IO;
+using System.Text;
 using Util;
+using Util.Configuration;
 
 namespace nntpPoster
 {
@@ -39,13 +36,13 @@ namespace nntpPoster
             if (!String.IsNullOrWhiteSpace(prefix))
                 subject.Append(prefix + " ");
 
-            if (folderConfiguration.UseRandomMssageSubjects)
+            if (folderConfiguration.UseRandomMessageSubjects)
             {
                 var fileName = File.Name;
                 var extensionPart = "";
-                foreach(var extensionToKeep in folderConfiguration.ForceIncludeExtensionsInSubject)
+                foreach (var extensionToKeep in folderConfiguration.ForceIncludeExtensionsInSubject)
                 {
-                    if(fileName.EndsWith(extensionToKeep, StringComparison.InvariantCultureIgnoreCase))
+                    if (fileName.EndsWith(extensionToKeep, StringComparison.InvariantCultureIgnoreCase))
                     {
                         extensionPart = extensionToKeep;
                     }
@@ -73,7 +70,7 @@ namespace nntpPoster
 
         private string GetFromAddress(String fromAddress)
         {
-            if("RANDOM".Equals(fromAddress, StringComparison.InvariantCultureIgnoreCase))
+            if ("RANDOM".Equals(fromAddress, StringComparison.InvariantCultureIgnoreCase))
             {
                 return RandomStringGenerator.GetRandomString(10, 30) + "@" + RandomStringGenerator.GetRandomString(5, 15) + "." + RandomStringGenerator.GetRandomString(3);
             }
@@ -138,12 +135,12 @@ namespace nntpPoster
             return postedFileInfo;
         }
 
-        private void PostPart(InntpMessagePoster poster, PostedFileInfo postedFileInfo, YEncFilePart part, 
+        private void PostPart(InntpMessagePoster poster, PostedFileInfo postedFileInfo, YEncFilePart part,
             String subjectNameBase)
         {
             var message = new NntpMessage();
             message.FromAddress = postedFileInfo.FromAddress;
-            if (folderConfiguration.UseRandomMssageSubjects)
+            if (folderConfiguration.UseRandomMessageSubjects)
             {
                 message.Subject = subjectNameBase;
             }

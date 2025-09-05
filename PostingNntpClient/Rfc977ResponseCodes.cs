@@ -1,5 +1,3 @@
-using System;
-
 namespace PostingNntpClient
 {
     internal sealed class Rfc977ResponseCodes

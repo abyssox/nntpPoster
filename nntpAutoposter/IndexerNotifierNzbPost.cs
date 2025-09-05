@@ -1,11 +1,9 @@
 ﻿using System;
-using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
-using System.Threading.Tasks;
 using Util.Configuration;
 
 namespace nntpAutoposter
@@ -30,14 +28,14 @@ namespace nntpAutoposter
 
                 MultipartFormDataContent form = new MultipartFormDataContent();
                 form.Add(new ByteArrayContent(nzbFileArray), Configuration.NzbPostFilenameParam, upload.CleanedName + ".nzb");
-                
-                if(!String.IsNullOrWhiteSpace(Configuration.NzbPostExtraParams))
+
+                if (!String.IsNullOrWhiteSpace(Configuration.NzbPostExtraParams))
                 {
                     var extraParams = Configuration.NzbPostExtraParams.Split(new Char[] { '&' }, StringSplitOptions.RemoveEmptyEntries);
-                    foreach(var extraParam in extraParams)
+                    foreach (var extraParam in extraParams)
                     {
                         var keyAndValue = extraParam.Split(new Char[] { '=' }, StringSplitOptions.RemoveEmptyEntries);
-                        if(keyAndValue.Length != 2)
+                        if (keyAndValue.Length != 2)
                             throw new Exception("Configuration error, NzbPostExtraParams is specified, but not in key=value&key2=value2 format.");
                         form.Add(new StringContent(keyAndValue[1]), keyAndValue[0]);
                     }

@@ -1,14 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Configuration;
-using System.IO;
-using System.Linq;
-using System.Text;
+﻿using log4net;
+using System;
 using System.Threading;
-using System.Threading.Tasks;
-using log4net;
-using nntpPoster;
-using Util;
 using Util.Configuration;
 
 namespace nntpAutoposter
@@ -17,93 +9,149 @@ namespace nntpAutoposter
     {
         private static readonly ILog log = LogManager.GetLogger(
             System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
+        private const int DefaultStopTimeoutMs = Timeout.Infinite;
 
         static void Main(string[] args)
         {
+            Watcher watcher = null;
+            AutoPoster poster = null;
+            IndexerNotifierBase notifier = null;
+            IndexerVerifierBase verifier = null;
+            DatabaseCleaner cleaner = null;
+
+            var exitRequested = false;
+            Console.CancelKeyPress += (sender, e) =>
+            {
+                e.Cancel = true;
+                exitRequested = true;
+            };
+
             try
             {
                 var configuration = Settings.LoadSettings();
 
-                Watcher watcher = new Watcher(configuration);
+                watcher = new Watcher(configuration);
                 watcher.Start();
                 log.Info("FileSystemWatcher started");
                 Console.WriteLine("FileSystemWatcher started");
 
-                AutoPoster poster = new AutoPoster(configuration);
+                poster = new AutoPoster(configuration);
                 poster.Start();
                 log.Info("Autoposter started");
                 Console.WriteLine("Autoposter started");
 
-                IndexerNotifierBase notifier = IndexerNotifierBase.GetActiveNotifier(configuration);
-                if (notifier != null)
+                if (configuration.NotificationEnabled)
                 {
-                    notifier.Start();
-                    log.Info("Notifier started");
-                    Console.WriteLine("Notifier started");
+                    notifier = IndexerNotifierBase.GetActiveNotifier(configuration);
+                    if (notifier != null)
+                    {
+                        notifier.Start();
+                        log.Info("Notifier started");
+                        Console.WriteLine("Notifier started");
+                    }
+                    else
+                    {
+                        log.Info("No notifier");
+                        Console.WriteLine("No notifier");
+                    }
                 }
                 else
                 {
-                    log.Info("No notifier");
-                    Console.WriteLine("No notifier");
+                    log.Info("Notification disabled");
+                    Console.WriteLine("Notification disabled");
                 }
 
-                IndexerVerifierBase verifier = IndexerVerifierBase.GetActiveVerifier(configuration);
-                if (verifier != null)
-                {
-                    verifier.Start();
-                    log.Info("Verifier started");
-                    Console.WriteLine("Verifier started");
+                if (configuration.VerificationEnabled)
+                { 
+                    verifier = IndexerVerifierBase.GetActiveVerifier(configuration);
+                    if (verifier != null)
+                    {
+                        verifier.Start();
+                        log.Info("Verifier started");
+                        Console.WriteLine("Verifier started");
+                    }
+                    else
+                    {
+                        log.Info("No verifier");
+                        Console.WriteLine("No verifier");
+                    }
                 }
                 else
                 {
-                    log.Info("No verifier");
-                    Console.WriteLine("No verifier");
+                    log.Info("Verification disabled");
+                    Console.WriteLine("Verification disabled");
                 }
 
-                DatabaseCleaner cleaner = new DatabaseCleaner(configuration);
+                cleaner = new DatabaseCleaner(configuration);
                 cleaner.Start();
                 log.Info("DB Cleaner started");
                 Console.WriteLine("DB Cleaner started");
 
-                Console.WriteLine("Press the \"s\" key to stop after the current operations have finished.");
+                Console.WriteLine("Press 's' to stop gracefully, or press Ctrl+C.");
 
-                Boolean stop = false;
-                while (!stop)
+                while (!exitRequested)
                 {
-                    var keyInfo = Console.ReadKey();
-                    stop = keyInfo.KeyChar == 's' || keyInfo.KeyChar == 'S';
+                    if (Console.KeyAvailable)
+                    {
+                        var keyInfo = Console.ReadKey(intercept: true);
+                        if (keyInfo.KeyChar == 's' || keyInfo.KeyChar == 'S')
+                        {
+                            exitRequested = true;
+                        }
+                    }
+                    else
+                    {
+                        Thread.Sleep(75);
+                    }
                 }
-
-                cleaner.Stop();
-                log.Info("DB Cleaner stopped");
-                Console.WriteLine("DB Cleaner stopped");
-
-                watcher.Stop();
-                log.Info("FileSystemWatcher stopped");
-                Console.WriteLine("FileSystemWatcher stopped");
+            }
+            catch (Exception ex)
+            {
+                log.Fatal("Fatal exception when starting the autoposter.", ex);
+                Console.Error.WriteLine("Fatal exception: " + ex.Message);
+                Environment.ExitCode = -1;
+            }
+            finally
+            {
+                if (cleaner != null)
+                {
+                    SafeStop("DB Cleaner", () => cleaner.Stop(DefaultStopTimeoutMs));
+                }
 
                 if (verifier != null)
                 {
-                    verifier.Stop();
-                    log.Info("Verifier stopped");
-                    Console.WriteLine("Verifier stopped");
+                    SafeStop("Verifier", () => verifier.Stop());
                 }
 
                 if (notifier != null)
                 {
-                    notifier.Stop();
-                    log.Info("Notifier stopped");
-                    Console.WriteLine("Notifier stopped");
+                    SafeStop("Notifier", () => notifier.Stop());
                 }
 
-                poster.Stop();
-                log.Info("Autoposter stopped");
-                Console.WriteLine("Autoposter stopped");
+                if (poster != null)
+                {
+                    SafeStop("Autoposter", () => poster.Stop(DefaultStopTimeoutMs));
+                }
+
+                if (watcher != null)
+                {
+                    SafeStop("FileSystemWatcher", () => watcher.Stop());
+                }
             }
-            catch(Exception ex)
+        }
+
+        private static void SafeStop(string name, Action stopAction)
+        {
+            try
             {
-                log.Fatal("Fatal exception when starting the autoposter.", ex);
-                throw;
+                stopAction();
+                LogManager.GetLogger(typeof(Program)).Info(name + " stopped");
+                Console.WriteLine(name + " stopped");
+            }
+            catch (Exception ex)
+            {
+                LogManager.GetLogger(typeof(Program)).Warn(name + " failed to stop cleanly.", ex);
+                Console.WriteLine(name + " failed to stop cleanly. See log for details.");
             }
         }
     }

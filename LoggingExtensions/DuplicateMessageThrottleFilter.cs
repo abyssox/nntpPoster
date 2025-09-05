@@ -1,65 +1,78 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using log4net.Core;
+﻿using log4net.Core;
 using log4net.Filter;
+using System;
 
 namespace LoggingExtensions
 {
     class DuplicateMessageThrottleFilter : FilterSkeleton
     {
-        public Boolean FilterPercentages { get; set; }
-        public Int32 PercentageCutoff { get; set; }
+        public bool FilterPercentages { get; set; }
+        public int PercentageCutoff { get; set; } = 85;
 
-        private String lastMessage;
+        private string _lastMessage;
+        private readonly object _lock = new object();
 
         public override FilterDecision Decide(LoggingEvent loggingEvent)
         {
-            if (PercentageCutoff <= 0 || PercentageCutoff > 100)
-                PercentageCutoff = 85;
+            if (loggingEvent == null)
+                return FilterDecision.Neutral;
+
+            NormalizeCutoff();
+
+            string newMessage = loggingEvent.MessageObject?.ToString();
+            if (string.IsNullOrWhiteSpace(newMessage))
+                return FilterDecision.Accept;
 
             FilterDecision decision = FilterDecision.Accept;
 
-            String newMessage = null;
-            if (loggingEvent.MessageObject != null)
+            lock (_lock)
             {
-                newMessage = loggingEvent.MessageObject.ToString();
-            }
-
-            if (!String.IsNullOrWhiteSpace(lastMessage) && !String.IsNullOrWhiteSpace(newMessage))
-            {
-
-                if (newMessage == lastMessage)
+                if (!string.IsNullOrWhiteSpace(_lastMessage))
                 {
-                    decision = FilterDecision.Deny;
-                }
-
-                if (FilterPercentages)
-                {
-                    Int32 lastMessagePercentageIndex = lastMessage.LastIndexOf('%');
-                    if (lastMessagePercentageIndex > 0)
+                    if (string.Equals(newMessage, _lastMessage, StringComparison.Ordinal))
                     {
-                        Int32 newMessagePercentageIndex = newMessage.LastIndexOf('%');
-                        if (newMessagePercentageIndex > 0)
-                        {
-                            Int32 newMessageSpaceIndex = newMessage.LastIndexOf(' ', newMessagePercentageIndex);
-                            if (newMessageSpaceIndex < 0)
-                                newMessageSpaceIndex = 0;
-                            Decimal percentage;
-                            if (Decimal.TryParse(newMessage.Substring(newMessageSpaceIndex, newMessagePercentageIndex - (newMessageSpaceIndex + 1)), out percentage))
-                            {
-                                if (percentage < PercentageCutoff)
-                                    decision = FilterDecision.Deny;
-                            }
-                        }
+                        decision = FilterDecision.Deny;
+                    }
+                    else if (FilterPercentages &&
+                             TryExtractPercentage(newMessage, out decimal percent) &&
+                             percent < PercentageCutoff)
+                    {
+                        decision = FilterDecision.Deny;
                     }
                 }
+
+                _lastMessage = newMessage;
             }
 
-            lastMessage = newMessage;
             return decision;
+        }
+
+        private void NormalizeCutoff()
+        {
+            if (PercentageCutoff <= 0 || PercentageCutoff > 100)
+                PercentageCutoff = 85;
+        }
+
+        private static bool TryExtractPercentage(string message, out decimal percentage)
+        {
+            percentage = 0m;
+
+            int percentIndex = message.LastIndexOf('%');
+            if (percentIndex <= 0)
+                return false;
+
+            int spaceIndex = message.LastIndexOf(' ', percentIndex);
+            if (spaceIndex < 0) spaceIndex = 0;
+
+            int startIndex = spaceIndex;
+            int length = percentIndex - startIndex;
+
+            if (length <= 0 || startIndex >= message.Length)
+                return false;
+
+            string candidate = message.Substring(startIndex, length).Trim();
+
+            return decimal.TryParse(candidate, out percentage);
         }
     }
 }
